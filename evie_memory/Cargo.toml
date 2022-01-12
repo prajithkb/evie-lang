@@ -1,10 +1,14 @@
 [package]
 edition = "2021"
-name = "evie_frontend"
+name = "evie_memory"
 version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bumpalo = {version = "3.9.1", features = ["boxed"]}
+derive-new = "0.5.9"
 evie_common = {path = "../evie_common"}
+
+[dev-dependencies]
 num_enum = "0.5.4"

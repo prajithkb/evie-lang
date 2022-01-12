@@ -1,23 +1,27 @@
 [workspace]
 members = [
+  "evie_common",
   "evie_frontend_bench",
   "evie_vm_bench",
   "evie_compiler_bench",
   "evie_vm",
   "evie_frontend",
-  "evie_gc",
+  "evie_memory",
   "evie_native",
   "evie_compiler",
+  "evie_instructions",
   "evie",
 ]
 
 default-members = [
+  "evie_instructions",
   "evie_vm",
   "evie_frontend",
-  "evie_gc",
+  "evie_memory",
   "evie_native",
   "evie_compiler",
   "evie",
+  "evie_common",
 ]
 
 [profile.dev]

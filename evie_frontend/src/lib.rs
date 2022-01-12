@@ -1,8 +1,6 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+//! The 'frontend' crate which parses the source code and produces [tokens].
+#[macro_use(bail)]
+extern crate evie_common;
+
+pub mod scanner;
+pub mod tokens;
