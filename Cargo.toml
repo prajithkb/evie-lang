@@ -3,6 +3,7 @@ members = [
   "evie_common",
   "evie_frontend_bench",
   "evie_vm_bench",
+  "evie_bench",
   "evie_compiler_bench",
   "evie_vm",
   "evie_frontend",

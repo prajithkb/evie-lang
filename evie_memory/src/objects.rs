@@ -1,9 +1,14 @@
-use std::{fmt::Display, ptr::NonNull};
+use std::{cell::RefCell, fmt::Display, ptr::NonNull, rc::Rc};
 
 use derive_new::new;
 use evie_common::Writer;
 
 use crate::chunk::Chunk;
+
+pub type Shared<T> = Rc<RefCell<T>>;
+pub fn shared<T>(v: T) -> Shared<T> {
+    Rc::new(RefCell::new(v))
+}
 
 /// A runtime 'Value' in Evie. This is only data structure exposed to the runtime.
 /// It is a combination of primitives such as 'Boolean' and complex data structures like 'Object'
@@ -47,6 +52,7 @@ pub fn print_value(value: &Value, writer: Writer) {
 pub enum Object {
     String(GCObjectOf<Box<str>>),
     Function(GCObjectOf<Function>),
+    Closure(GCObjectOf<Closure>),
 }
 
 impl Display for Object {
@@ -54,7 +60,34 @@ impl Display for Object {
         match self {
             Object::String(s) => f.write_str(&s.as_ref().to_string()),
             Object::Function(fun) => f.write_str(&fun.as_ref().to_string()),
+            Object::Closure(c) => f.write_str(&c.as_ref().to_string()),
         }
+    }
+}
+
+impl std::hash::Hash for GCObjectOf<Box<str>> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.reference.hash(state);
+    }
+}
+
+impl PartialEq for GCObjectOf<Box<str>> {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference == other.reference
+    }
+}
+
+impl Eq for GCObjectOf<Box<str>> {}
+
+#[derive(Debug, Clone, Copy, new)]
+pub struct Closure {
+    pub function: GCObjectOf<Function>,
+    pub upvalues: GCObjectOf<Vec<Upvalue>>,
+}
+
+impl Display for Closure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.function.as_ref().to_string())
     }
 }
 /// Functions in Evie
@@ -91,6 +124,23 @@ impl Display for UserDefinedFunction {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Upvalue {
+    pub location: Location,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Location {
+    Stack(usize),
+    Heap(Value),
+}
+
+impl Upvalue {
+    pub fn new_with_location(location: Location) -> Self {
+        Upvalue { location }
+    }
+}
+
 /// Metadata related to an [Object]. Used mainly for GC.
 /// See
 #[derive(Default, Debug, Clone, Copy, new)]
@@ -114,6 +164,10 @@ impl<T> GCObjectOf<T> {
             metadata,
             reference,
         }
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        self.reference.as_ptr()
     }
 }
 

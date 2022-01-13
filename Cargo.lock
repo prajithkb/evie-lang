@@ -77,6 +77,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "ctor"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccc0a48a9b826acdf4028595adc9db92caea352f7af011a3034acd172a52a0aa"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "derive-new"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -112,6 +122,14 @@ dependencies = [
 
 [[package]]
 name = "evie"
+version = "0.1.0"
+dependencies = [
+ "evie_common",
+ "evie_vm",
+]
+
+[[package]]
+name = "evie_bench"
 version = "0.1.0"
 
 [[package]]
@@ -176,6 +194,14 @@ version = "0.1.0"
 [[package]]
 name = "evie_vm"
 version = "0.1.0"
+dependencies = [
+ "ctor",
+ "evie_common",
+ "evie_compiler",
+ "evie_frontend",
+ "evie_instructions",
+ "evie_memory",
+]
 
 [[package]]
 name = "evie_vm_bench"

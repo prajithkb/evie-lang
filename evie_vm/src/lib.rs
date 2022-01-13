@@ -1,8 +1,8 @@
+mod runtime_memory;
+pub mod vm;
+
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
+#[ctor::ctor]
+fn init() {
+    evie_common::env_logger::init();
 }

@@ -29,6 +29,7 @@ pub mod errors {
         }
     }
 }
+pub use env_logger;
 pub use error_chain::bail;
 pub use errors::*;
 pub use log::*;
