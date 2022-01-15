@@ -221,17 +221,7 @@ impl<'a> VirtualMachine<'a> {
         self.closure_from_stack(index)
     }
 
-    #[inline(always)]
-    fn check_stack_overflow(&self, index: usize) -> Result<()> {
-        assert!(index < STACK_SIZE, "Stack overflow");
-        // if index >= STACK_SIZE {
-        //     bail!(self.runtime_error(&format!(
-        //         "Stack overflow: index {} out of bounds, stack size = {}",
-        //         index, STACK_SIZE
-        //     )))
-        // }
-        Ok(())
-    }
+
 
     #[inline(always)]
     fn get_stack(&self, index: usize) -> Result<Value> {
@@ -242,7 +232,7 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn set_stack_mut(&mut self, index: usize, v: Value) -> Result<()> {
-        self.check_stack_overflow(index)?;
+        assert!(index < STACK_SIZE, "Stack overflow");
         self.stack[index % STACK_SIZE] = v;
         // # Safety, we check for stackoverflow before accessing it.
         Ok(())
@@ -994,7 +984,7 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn push(&mut self, value: Value) -> Result<()> {
-        self.check_stack_overflow(self.stack_top)?;
+        assert!(self.stack_top < STACK_SIZE);
         self.stack[self.stack_top] = value;
         self.stack_top += 1;
         Ok(())
