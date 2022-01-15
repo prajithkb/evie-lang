@@ -169,6 +169,28 @@ impl<T> GCObjectOf<T> {
     pub fn as_ptr(&self) -> *const T {
         self.reference.as_ptr()
     }
+
+    pub fn map_ref<U, F>(orig: GCObjectOf<T>, f: F) -> GCObjectOf<U>
+    where
+        F: FnOnce(&T) -> &U,
+    {
+        let ptr: *const U = unsafe { f(orig.reference.as_ref()) } as *const U;
+        GCObjectOf {
+            metadata: orig.metadata,
+            reference: NonNull::new(ptr as *mut U).expect("Null pointer"),
+        }
+    }
+
+    pub fn map_mut<U, F>(mut orig: GCObjectOf<T>, f: F) -> GCObjectOf<U>
+    where
+        F: FnOnce(&mut T) -> &mut U,
+    {
+        let ptr: *mut U = unsafe { f(orig.reference.as_mut()) };
+        GCObjectOf {
+            metadata: orig.metadata,
+            reference: NonNull::new(ptr).expect("Null pointer"),
+        }
+    }
 }
 
 impl<T> Clone for GCObjectOf<T> {

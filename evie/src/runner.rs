@@ -6,15 +6,15 @@ use std::{
 use evie_common::{errors::*, print_error};
 use evie_vm::vm::VirtualMachine;
 
-pub struct Lox<'a> {
+pub struct Runner<'a> {
     vm: VirtualMachine<'a>,
 }
 
-impl<'a> Lox<'a> {
+impl<'a> Runner<'a> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let vm = VirtualMachine::new();
-        Lox { vm }
+        Runner { vm }
     }
 
     pub fn run_script(&mut self, path: &str) -> Result<()> {
@@ -36,7 +36,7 @@ impl<'a> Lox<'a> {
     }
 
     pub fn run_vm(&mut self, source: String) -> Result<()> {
-        self.vm.interpret(source)?;
+        self.vm.interpret(source, None)?;
         Ok(())
     }
     pub fn run_prompt(&mut self) -> Result<()> {

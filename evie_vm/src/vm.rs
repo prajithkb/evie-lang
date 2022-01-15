@@ -3,7 +3,6 @@ use std::f64::EPSILON;
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
 use std::ops::Range;
-use std::ptr::NonNull;
 use std::time::{Instant};
 use evie_common::{errors::*, info, log_enabled, Level, ByteUnit, bail, trace, utf8_to_string, error};
 use evie_common::Writer;
@@ -45,6 +44,12 @@ impl CallFrame {
     
 // }
 
+#[derive(Default)]
+pub struct Args {
+    _timing_per_instruction: bool,
+
+}
+
 pub struct VirtualMachine<'a> {
     stack: [Value; STACK_SIZE],
     stack_top: usize,
@@ -52,8 +57,8 @@ pub struct VirtualMachine<'a> {
     runtime_values: Values,
     up_values: LinkedList<GCObjectOf<Upvalue>>,
     custom_writer: Option<Writer<'a>>,
-    ip: NonNull<usize>,
-    allocator: ObjectAllocator
+    allocator: ObjectAllocator,
+    optional_args: Option<Args>
 }
 
 impl<'a> std::fmt::Debug for VirtualMachine<'a> {
@@ -103,8 +108,8 @@ impl<'a> VirtualMachine<'a> {
             runtime_values: Values::new(),
             up_values: LinkedList::new(),
             custom_writer,
-            ip: NonNull::new(&mut 0usize).expect("Null pointer"),
-            allocator: ObjectAllocator::new()
+            allocator: ObjectAllocator::new(),
+            optional_args: None
         }
     }
 
@@ -119,8 +124,9 @@ impl<'a> VirtualMachine<'a> {
     //     })
     // }
 
-    pub fn interpret(&mut self, source: String) -> Result<()> {
+    pub fn interpret(&mut self, source: String, optional_args: Option<Args>) -> Result<()> {
         self.reset_vm();
+        self.optional_args = optional_args;
         let mut scanner = Scanner::new(source);
         let start_time = Instant::now();
         let tokens = scanner.scan_tokens()?;
@@ -140,7 +146,7 @@ impl<'a> VirtualMachine<'a> {
         self.call_frames.push(CallFrame::new(0));
         let start_time = Instant::now();
         let result = self.run();
-        info!("Ran in {} us", start_time.elapsed().as_micros());
+        info!("Ran in {} us, bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
         result
     }
 
@@ -150,45 +156,41 @@ impl<'a> VirtualMachine<'a> {
     }
 
 
-    #[inline]
+    #[inline(always)]
     fn call_frame_mut(&mut self) -> &mut CallFrame {
         self.call_frame_peek_at_mut(0)
     }
-    #[inline]
+    #[inline(always)]
     fn call_frame(&self) -> &CallFrame {
         self.call_frame_peek_at(0)
     }
-    #[inline]
+    #[inline(always)]
     fn call_frame_peek_at_mut(&mut self, index: usize) -> &mut CallFrame {
         let len = self.call_frames.len();
         &mut self.call_frames[len - 1 - index]
     }
-    #[inline]
+    #[inline(always)]
     fn call_frame_peek_at(&self, index: usize) -> &CallFrame {
         let len = self.call_frames.len();
         &self.call_frames[len - 1 - index]
     }
 
-    #[inline]
+    #[inline(always)]
     fn ip(&self) -> usize {
         self.call_frame().ip
     }
 
-    #[inline]
+    #[inline(always)]
     fn set_ip(&mut self, index: usize) {
         self.call_frame_mut().ip = index;
     }
 
-    fn set_ip_ptr(&mut self, ptr: *mut  usize) {
-        self.ip = NonNull::new(ptr).expect("null pointer");
-    }
-
-    #[inline]
+    #[inline(always)]
     fn read_byte_at(&self, chunk: &Chunk, ip: usize) -> Result<ByteUnit> {
-        Ok(*chunk.code.read_item_at(ip))
+        Ok(chunk.code.read_item_at(ip))
     }
 
-    #[inline]
+    #[inline(always)]
     fn read_byte(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<ByteUnit> {
         let v = self.read_byte_at(chunk, *ip)?;
         *ip += 1;
@@ -196,21 +198,15 @@ impl<'a> VirtualMachine<'a> {
         Ok(v)
     }
 
-    #[inline]
+    #[inline(always)]
     fn read_constant(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<Value> {
-        let v = self.read_constant_as_ref(chunk, ip)?;
-        Ok(*v)
-    }
-
-    #[inline]
-    fn read_constant_as_ref<'b>(&mut self, chunk: &'b Chunk, ip: &mut usize) -> Result<&'b Value> {
         let v = chunk.read_constant_at(*ip);
         *ip += 1;
         self.set_ip(*ip);
         Ok(v)
     }
 
-    #[inline]
+    #[inline(always)]
     fn current_chunk(&self) -> Result<GCObjectOf<Chunk>> {
         let function = self.current_function()?;
         match function.as_ref() {
@@ -219,34 +215,40 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn current_closure(&self) -> Result<GCObjectOf<Closure>> {
         let index = self.call_frame().fn_start_stack_index;
         self.closure_from_stack(index)
     }
 
-    fn get_stack(&self, index: usize) -> Result<Value> {
-        if index > self.stack_top {
-            bail!(self.runtime_error(&format!(
-                "VM BUG: index {} out of bounds, stack size = {}",
-                index, STACK_SIZE
-            )))
-        }
-        Ok(self.stack[index])
-    }
-
-    fn set_stack_mut(&mut self, index: usize, v: Value) -> Result<()> {
-        if index > STACK_SIZE {
-            bail!(self.runtime_error(&format!(
-                "Stack overflow, stack size = {}, index = {}",
-                STACK_SIZE, index
-            )));
-        }
-        self.stack[index] = v;
+    #[inline(always)]
+    fn check_stack_overflow(&self, index: usize) -> Result<()> {
+        assert!(index < STACK_SIZE, "Stack overflow");
+        // if index >= STACK_SIZE {
+        //     bail!(self.runtime_error(&format!(
+        //         "Stack overflow: index {} out of bounds, stack size = {}",
+        //         index, STACK_SIZE
+        //     )))
+        // }
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
+    fn get_stack(&self, index: usize) -> Result<Value> {
+        assert!(index < STACK_SIZE, "Stack overflow");
+        // # Safety, we check for stackoverflow before accessing it.
+        Ok(self.stack[index % STACK_SIZE])
+    }
+
+    #[inline(always)]
+    fn set_stack_mut(&mut self, index: usize, v: Value) -> Result<()> {
+        self.check_stack_overflow(index)?;
+        self.stack[index % STACK_SIZE] = v;
+        // # Safety, we check for stackoverflow before accessing it.
+        Ok(())
+    }
+
+    #[inline(always)]
     fn closure_from_stack(&self, index: usize) -> Result<GCObjectOf<Closure>> {
         let v = self.get_stack(index)?;
         match v {
@@ -258,13 +260,13 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn current_function(&self) -> Result<GCObjectOf<Function>> {
         let v = self.current_closure()?;
         Ok(v.as_ref().function)
     }
 
-    #[inline]
+    #[inline(always)]
     fn read_short(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<u16> {
         let first = self.read_byte(chunk, ip)? as u16;
         let second = self.read_byte(chunk, ip)? as u16;
@@ -275,6 +277,7 @@ impl<'a> VirtualMachine<'a> {
         let mut current_function = self.current_function()?;
         let mut current_chunk  = self.current_chunk()?;
         let ip = &mut 0;
+        info!("{} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
         #[allow(unused_assignments)]
         loop {
             let mut buf = None;
@@ -307,7 +310,7 @@ impl<'a> VirtualMachine<'a> {
             }
             match instruction {
                 Opcode::Constant => {
-                    let constant = self.read_constant(current_chunk.as_ref(),ip)?;
+                    let constant = self.read_constant(current_chunk.as_ref(), ip)?;
                     self.push(constant)?;
                 }
                 Opcode::Return => {
@@ -317,11 +320,9 @@ impl<'a> VirtualMachine<'a> {
                     if self.call_frames.len() == 1 {
                         return Ok(());
                     }
-                    let _frame = self.call_frames.pop().expect("expect frame");
+                    self.call_frames.pop();
                     current_function = self.current_function()?;
                     current_chunk = self.current_chunk()?;
-                    let ip_ptr = &mut self.call_frame_mut().ip as *mut usize;
-                    self.set_ip_ptr(ip_ptr);
                     *ip = self.ip();
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
@@ -362,7 +363,7 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::Print => {
                     let v = self.pop();
-                    self.print_stack_value(&v);
+                    self.print_stack_value(v);
                     self.new_line();
                 }
                 Opcode::Pop => {
@@ -437,8 +438,6 @@ impl<'a> VirtualMachine<'a> {
                     self.call(arg_count)?;
                     current_function = self.current_function()?;
                     current_chunk = self.current_chunk()?;
-                    let ip_ptr = &mut self.call_frame_mut().ip as *mut usize;
-                    self.set_ip_ptr(ip_ptr);
                     *ip = self.ip();
                 }
                 Opcode::Closure => {
@@ -875,18 +874,18 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline]
     fn read_string(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Box<str>>> {
-        let constant = self.read_constant_as_ref(chunk, ip)?;
+        let constant = self.read_constant(chunk, ip)?;
         match constant {
-            Value::Object(Object::String(s)) => Ok(*s),
+            Value::Object(Object::String(s)) => Ok(s),
             _ => Err(self.runtime_error("message").into()),
         }
     }
 
     #[inline]
     fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Function>> {
-        let constant = self.read_constant_as_ref(chunk, ip)?;
+        let constant = self.read_constant(chunk, ip)?;
         match constant {
-            Value::Object(Object::Function(s)) => Ok(*s),
+            Value::Object(Object::Function(s)) => Ok(s),
             _ => bail!(self.runtime_error("Not a function")),
         }
     }
@@ -979,7 +978,7 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn binary_op_with_num(
         &mut self,
         left: f64,
@@ -993,21 +992,17 @@ impl<'a> VirtualMachine<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, value: Value) -> Result<()> {
-        if self.stack_top == STACK_SIZE {
-            bail!(self.runtime_error(&format!(
-                "Stack overflow, stack size = {}, index = {}",
-                STACK_SIZE, self.stack_top
-            )));
-        }
+        self.check_stack_overflow(self.stack_top)?;
         self.stack[self.stack_top] = value;
         self.stack_top += 1;
         Ok(())
     }
-    #[inline]
+    #[inline(always)]
     fn pop(&mut self) -> Value {
         self.stack_top -= 1;
+        assert!(self.stack_top < STACK_SIZE);
         self.stack[self.stack_top]
         // std::mem::take(&mut self.stack[self.stack_top])
     }
@@ -1016,12 +1011,14 @@ impl<'a> VirtualMachine<'a> {
         //TODO
     }
 
-    fn print_stack_value(&mut self, value: &Value) {
+    #[inline(always)]
+    fn print_stack_value(&mut self, value: Value) {
         match self.custom_writer.as_deref_mut() {
             Some(w) => print_stack_value(value, w),
             None => print_stack_value(value, &mut stdout()),
         }
     }
+    #[inline(always)]
     fn new_line(&mut self) {
         match self.custom_writer.as_deref_mut() {
             Some(w) => writeln!(w).expect("Write failed"),
@@ -1030,13 +1027,16 @@ impl<'a> VirtualMachine<'a> {
     }
 }
 
+#[inline(always)]
 fn runtime_vm_error(line: usize, message: &str) -> ErrorKind {
     ErrorKind::RuntimeError(format!("Line: {}, message: {}", line, message))
 }
 
+#[inline(always)]
 fn num_equals(l: f64, r: f64) -> bool {
     (l - r).abs() < EPSILON
 }
+#[inline(always)]
 fn value_equals(l: Value, r: Value) -> Result<bool> {
     match (l, r) {
         (Value::Boolean(l), Value::Boolean(r)) => Ok(l == r),
@@ -1057,7 +1057,7 @@ fn is_falsey(value: &Value) -> bool {
     }
 }
 
-fn print_stack_value(value: &Value, writer: &mut dyn Write) {
+fn print_stack_value(value: Value, writer: &mut dyn Write) {
    opcodes::print_value(value, writer)
 }
 
@@ -1088,7 +1088,7 @@ mod tests {
         print 3 == false; //false
         print (2 + 3)/5; //1
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!(
             "2\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n1\n",
             utf8_to_string(&buf)
@@ -1108,7 +1108,7 @@ mod tests {
         print a ==c;
         print a==b;
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("hello  world\ntrue\nfalse\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1127,7 +1127,7 @@ mod tests {
         }
         print a;
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("2\n3\n2\n", utf8_to_string(&buf));
         let mut buf = vec![];
         let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
@@ -1142,7 +1142,7 @@ mod tests {
         print a;
         print b;
         "#;
-        match vm.interpret(source.to_string()) {
+        match vm.interpret(source.to_string(), None) {
             Ok(_) => panic!("Expected to fail"),
             Err(e) => assert_eq!(
                 "Runtime Error: Line: 10, message: Undefined variable 'b'\n[line 10] in <fn script>\n",
@@ -1160,7 +1160,7 @@ mod tests {
         }
         print a;
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("16\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1186,7 +1186,7 @@ mod tests {
         }
         print a;
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("if\nelse\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1199,7 +1199,7 @@ mod tests {
         print 2 or 3;
         print 2 and 3;
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("2\n3\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1218,7 +1218,7 @@ mod tests {
                 a = "stop";
         }
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("1\n2\n3\n4\n5\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1236,7 +1236,7 @@ mod tests {
 
         a();
         "#;
-        match vm.interpret(source.to_string()) {
+        match vm.interpret(source.to_string(), None) {
             Ok(_) => panic!("Expect this to fail"),
             Err(e) => {
                 print_error(e, &mut buf);
@@ -1269,7 +1269,7 @@ mod tests {
         }
         a();
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("hello world\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1284,7 +1284,7 @@ mod tests {
         }
         print a();
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("hello world\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1297,7 +1297,7 @@ mod tests {
           
           print fib(10);
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("55\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1316,7 +1316,7 @@ mod tests {
           }
         outer();
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("outside\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1334,7 +1334,7 @@ mod tests {
         var closure = outer();
         closure();
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("outside\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1357,7 +1357,7 @@ mod tests {
         globalSet();
         globalGet();
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("updated\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1375,7 +1375,7 @@ mod tests {
         print pair.first + pair.second; // 3.
 
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("3\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1395,7 +1395,7 @@ mod tests {
           scone.topping("berries", "cream");
 
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("scone with berries and cream\n", utf8_to_string(&buf));
         Ok(())
     }
@@ -1417,7 +1417,7 @@ mod tests {
         print brunch.food + " and " + brunch.drinks;
 
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("eggs and coffee\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1442,7 +1442,7 @@ mod tests {
         print brunch_with_dessert.food + " and " + brunch_with_dessert.drinks + " with " + brunch_with_dessert.dessert + " as dessert";
 
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!(
             "eggs and coffee with cake as dessert\n",
             utf8_to_string(&buf)
@@ -1483,7 +1483,7 @@ mod tests {
         cookie.taste_again(); 
 
         "#;
-        vm.interpret(source.to_string())?;
+        vm.interpret(source.to_string(), None)?;
         assert_eq!("The German chocolate cake is delicious!\nThe Belgian chocolate cake is delicious!\nThe German chocolate cookie is delicious!\nThe Belgian chocolate cookie is delicious!\n", utf8_to_string(&buf));
 
         let mut buf = vec![];
@@ -1498,7 +1498,7 @@ mod tests {
                   
         var brunch = Brunch("eggs");
         "#;
-        match vm.interpret(source.to_string()) {
+        match vm.interpret(source.to_string(), None) {
             Err(e) => {
                 print_error(e, &mut buf);
                 assert_eq!("[Runtime Error] Line: 9, message: Expected 2 arguments but got 1\n[line 9] in <fn script>\n\n", utf8_to_string(&buf))
@@ -1519,7 +1519,7 @@ mod tests {
                   
         var brunch = Brunch("eggs");
         "#;
-        match vm.interpret(source.to_string()) {
+        match vm.interpret(source.to_string(), None) {
             Err(e) => {
                 print_error(e, &mut buf);
                 assert_eq!("[Parse Error] [line: 6] Error at <2>: message: Can't return a value from an initializer\n", utf8_to_string(&buf))
@@ -1548,7 +1548,7 @@ mod tests {
             expected.push_str("[line 3] in <fn infinite_recursion>\n");
         }
         expected.push_str("[line 6] in <fn script>\n\n");
-        match vm.interpret(source.to_string()) {
+        match vm.interpret(source.to_string(), None) {
             Ok(_) => panic!("This test is expected to fail"),
             Err(e) => {
                 print_error(e, &mut buf);
@@ -1566,7 +1566,7 @@ mod tests {
     //     print clock();
     //     "#;
     //     define_native_fn("clock".to_string(), 0, &mut vm, VirtualMachine::clock());
-    //     let _ = vm.interpret(source.to_string())?;
+    //     let _ = vm.interpret(source.to_string(), None)?;
     //     let output = utf8_to_string(&buf);
     //     // This will fail if it is not f64
     //     let _ = output.trim().parse::<f64>().unwrap();

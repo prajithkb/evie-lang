@@ -28,12 +28,12 @@ impl Chunk {
         self.constants.write_item(value);
         // /After we add the constant, we return the index where the constant was appended
         // so that we can locate that same constant later.
-        (self.constants.count - 1) as ByteUnit
+        (self.constants.inner.len() - 1) as ByteUnit
     }
 
     #[inline]
-    pub fn read_constant_at(&self, offset: usize) -> &Value {
-        let offset = *self.code.read_item_at(offset);
+    pub fn read_constant_at(&self, offset: usize) -> Value {
+        let offset = self.code.read_item_at(offset);
         self.constants.read_item_at(offset as usize)
     }
 
@@ -53,42 +53,32 @@ impl Chunk {
         self.free_code();
         self.free_data();
     }
-
-    pub fn current_line(&self) -> usize {
-        self.lines[self.code.read_index]
-    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Memory<T> {
+pub struct Memory<T: Copy> {
     pub inner: Vec<T>,
-    pub count: usize,
-    pub read_index: usize,
 }
 #[allow(unused)]
-impl<T> Memory<T> {
+impl<T: Copy> Memory<T> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Memory {
-            inner: vec![],
-            count: 0,
-            read_index: 0,
-        }
+        Memory { inner: vec![] }
+    }
+
+    #[inline(always)]
+    pub fn item_count(&self) -> usize {
+        self.inner.len()
     }
 
     #[inline]
     pub fn write_item(&mut self, item: T) {
         self.inner.push(item);
-        self.count += 1;
     }
 
-    #[inline]
-    pub fn set_current_index(&mut self, index: usize) {
-        self.read_index = index
-    }
-    #[inline]
-    pub fn read_item_at(&self, index: usize) -> &T {
-        &self.inner[index]
+    #[inline(always)]
+    pub fn read_item_at(&self, index: usize) -> T {
+        self.inner[index]
     }
 
     pub fn insert_at(&mut self, index: usize, v: T) {
@@ -97,6 +87,5 @@ impl<T> Memory<T> {
 
     pub fn free_items(&mut self) {
         self.inner.clear();
-        self.count = 0;
     }
 }

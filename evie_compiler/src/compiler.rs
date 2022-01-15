@@ -678,7 +678,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn while_statement(&mut self) -> Result<()> {
-        let loop_start = self.current_chunk_mut().code.count;
+        let loop_start = self.current_chunk_mut().code.item_count();
         self.consume_next_token(TokenType::LeftParen, "Expect '(' after while")?;
         self.expression()?;
         self.consume_next_token(TokenType::RightParen, "Expect ')' after condition")?;
@@ -949,13 +949,13 @@ impl<'a> Compiler<'a> {
         self.emit_op_code(opcode);
         self.emit_byte(0xff);
         self.emit_byte(0xff);
-        self.current_chunk_mut().code.count - 2
+        self.current_chunk_mut().code.item_count() - 2
     }
 
     #[inline]
     fn emit_loop(&mut self, loop_start: usize) {
         self.emit_op_code(Opcode::Loop);
-        let jump = self.current_chunk_mut().code.count - loop_start + 2;
+        let jump = self.current_chunk_mut().code.item_count() - loop_start + 2;
         let (first, second) = as_two_bytes(jump);
         self.emit_byte(first);
         self.emit_byte(second);
@@ -963,7 +963,7 @@ impl<'a> Compiler<'a> {
 
     #[inline]
     fn patch_jump(&mut self, offset: usize) -> Result<()> {
-        let jump = self.current_chunk_mut().code.count - offset - 2;
+        let jump = self.current_chunk_mut().code.item_count() - offset - 2;
         let (first, second) = as_two_bytes(jump);
         self.current_chunk_mut().code.insert_at(offset, first);
         self.current_chunk_mut().code.insert_at(offset + 1, second);
@@ -1377,10 +1377,8 @@ mod tests {
                     u.chunk.as_ref().read_constant_at(0),
                     u.chunk.as_ref().read_constant_at(3),
                 ) {
-                    (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-                        (*l, *r)
-                    }
-                    _ => panic!("failed"),
+                    (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => (l, r),
+                    _ => panic!("This should not happen"),
                 };
                 assert_eq!(a.as_ref(), b.as_ref());
                 assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()))

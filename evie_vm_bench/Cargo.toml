@@ -1,8 +1,22 @@
 [package]
+edition = "2021"
 name = "evie_vm_bench"
 version = "0.1.0"
-edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+evie_common = {path = "../evie_common"}
+evie_vm = {path = "../evie_vm"}
+
+[dev-dependencies]
+criterion = "0.3"
+ctor = "0.1.21"
+
+[profile.release]
+debug = true
+opt-level = 3
+
+[[bench]]
+harness = false
+name = "vm_bench"

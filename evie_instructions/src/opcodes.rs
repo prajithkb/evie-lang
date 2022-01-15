@@ -3,7 +3,7 @@ use std::{convert::TryFrom, fmt::Display, io::Write};
 use evie_common::ByteUnit;
 use evie_memory::{
     chunk::Chunk,
-    objects::{Object, Value, Function},
+    objects::{Function, Object, Value},
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -69,7 +69,7 @@ pub fn constant_instruction(
     offset: usize,
     writer: &mut dyn Write,
 ) -> usize {
-    let constant = *chunk.code.read_item_at(offset + 1);
+    let constant = chunk.code.read_item_at(offset + 1);
     write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("Write failed");
@@ -82,7 +82,7 @@ pub fn byte_instruction(
     offset: usize,
     writer: &mut dyn Write,
 ) -> usize {
-    let slot = *chunk.code.read_item_at(offset + 1);
+    let slot = chunk.code.read_item_at(offset + 1);
     writeln!(writer, "{:<30} {:4}", instruction.to_string(), slot).expect("Write failed");
     offset + 2
 }
@@ -94,8 +94,8 @@ pub fn jump_instruction(
     offset: usize,
     writer: &mut dyn Write,
 ) -> usize {
-    let mut jump = as_u16(*chunk.code.read_item_at(offset + 1)) << 8;
-    jump |= as_u16(*chunk.code.read_item_at(offset + 2));
+    let mut jump = as_u16(chunk.code.read_item_at(offset + 1)) << 8;
+    jump |= as_u16(chunk.code.read_item_at(offset + 2));
     writeln!(
         writer,
         "{:<30} {:4} -> {}",
@@ -111,14 +111,14 @@ fn as_u16(i: ByteUnit) -> u16 {
     i as u16
 }
 
-pub fn print_value(value: &Value, writer: &mut dyn Write) {
+pub fn print_value(value: Value, writer: &mut dyn Write) {
     write!(writer, "{}", value).expect("Write failed");
 }
 
 pub fn disassemble_chunk_with_writer(chunk: &Chunk, name: &str, writer: &mut dyn Write) {
     writeln!(writer, "== {} ==", name).expect("Write failed");
     let mut offset = 0;
-    while offset < chunk.code.count {
+    while offset < chunk.code.item_count() {
         offset = disassemble_instruction_with_writer(chunk, offset, writer);
     }
 }
@@ -134,7 +134,7 @@ pub fn disassemble_instruction_with_writer(
     } else {
         write!(writer, "{:04} ", chunk.lines[offset]).expect("Write failed");
     }
-    let byte = *chunk.code.read_item_at(offset);
+    let byte = chunk.code.read_item_at(offset);
     disassemble_instruction(byte, chunk, offset, writer)
 }
 pub fn closure_instruction(
@@ -144,19 +144,19 @@ pub fn closure_instruction(
     writer: &mut dyn Write,
 ) -> usize {
     offset += 1;
-    let constant = *chunk.code.read_item_at(offset);
+    let constant = chunk.code.read_item_at(offset);
     offset += 1;
     write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("write failed");
-    let v = &*chunk.constants.read_item_at(constant as usize);
+    let v = chunk.constants.read_item_at(constant as usize);
     if let Value::Object(Object::Function(c)) = v {
         let function = c.as_ref();
         if let Function::UserDefined(u) = function {
             for _ in 0..u.upvalue_count {
-                let is_local = *chunk.code.read_item_at(offset);
+                let is_local = chunk.code.read_item_at(offset);
                 offset += 1;
-                let index = *chunk.code.read_item_at(offset);
+                let index = chunk.code.read_item_at(offset);
                 offset += 1;
                 writeln!(
                     writer,
@@ -179,8 +179,8 @@ pub fn invoke_instruction(
     offset: usize,
     writer: &mut dyn Write,
 ) -> usize {
-    let constant = *chunk.code.read_item_at(offset + 1);
-    let arg_count = *chunk.code.read_item_at(offset + 2);
+    let constant = chunk.code.read_item_at(offset + 1);
+    let arg_count = chunk.code.read_item_at(offset + 2);
 
     write!(
         writer,
