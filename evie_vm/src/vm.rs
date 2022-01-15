@@ -303,9 +303,6 @@ impl<'a> VirtualMachine<'a> {
                 );
             }
             match instruction {
-                Opcode::Noop => {
-                    // Noop
-                }
                 Opcode::Constant => {
                     let constant = self.read_constant(current_chunk.as_ref(), ip)?;
                     self.push(constant)?;
