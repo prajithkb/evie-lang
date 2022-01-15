@@ -320,7 +320,6 @@ version = "0.1.0"
 dependencies = [
  "evie_common",
  "evie_memory",
- "num_enum",
 ]
 
 [[package]]

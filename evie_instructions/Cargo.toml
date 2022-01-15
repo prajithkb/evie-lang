@@ -8,4 +8,3 @@ version = "0.1.0"
 [dependencies]
 evie_common = {path = "../evie_common"}
 evie_memory = {path = "../evie_memory"}
-num_enum = "0.5.4"

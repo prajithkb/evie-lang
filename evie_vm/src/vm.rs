@@ -292,14 +292,7 @@ impl<'a> VirtualMachine<'a> {
                 opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *ip, buf.as_mut().unwrap());
             }
             let byte = self.read_byte(current_chunk.as_ref(), ip)?;
-            let instruction: Opcode = Opcode::try_from(byte).map_err(|e| {
-                self.runtime_error(&format!(
-                    "Invalid instruction (byte:{}) at {}, error: {}",
-                    byte,
-                    ip,
-                    e
-                ))
-            })?;
+            let instruction: Opcode = Opcode::from(byte);
             if log_enabled!(Level::Trace) {
                 let fun_name = current_function.as_ref().to_string();
                 trace!(
@@ -310,6 +303,9 @@ impl<'a> VirtualMachine<'a> {
                 );
             }
             match instruction {
+                Opcode::Noop => {
+                    // Noop
+                }
                 Opcode::Constant => {
                     let constant = self.read_constant(current_chunk.as_ref(), ip)?;
                     self.push(constant)?;

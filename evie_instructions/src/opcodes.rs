@@ -5,11 +5,10 @@ use evie_memory::{
     chunk::Chunk,
     objects::{Function, Object, Value},
 };
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// The supported op codes for Evie VM.
 /// TODO: Add detailed docs for each
-#[derive(Debug, PartialEq, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 pub enum Opcode {
     Constant,
@@ -50,6 +49,18 @@ pub enum Opcode {
     GetProperty,
     Method,
     Invoke,
+}
+
+impl From<u8> for Opcode {
+    fn from(byte: u8) -> Self {
+        unsafe { std::mem::transmute::<u8, Opcode>(byte) }
+    }
+}
+
+impl From<Opcode> for u8 {
+    fn from(opcode: Opcode) -> Self {
+        unsafe { std::mem::transmute::<Opcode, u8>(opcode) }
+    }
 }
 
 impl Display for Opcode {
@@ -299,5 +310,14 @@ mod tests {
             utf8_to_string(&buf)
         );
         Ok(())
+    }
+
+    #[test]
+    fn from_into_u8_opcodes() {
+        assert_eq!(0u8, Opcode::Constant.into());
+        assert_eq!(37u8, Opcode::Invoke.into());
+
+        assert_eq!(Opcode::Constant, 0u8.into());
+        assert_eq!(Opcode::Invoke, 37u8.into());
     }
 }
