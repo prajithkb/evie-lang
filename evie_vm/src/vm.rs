@@ -3,6 +3,7 @@ use std::f64::EPSILON;
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
 use std::ops::Range;
+use std::ptr::NonNull;
 use std::time::{Instant};
 use evie_common::{errors::*, info, log_enabled, Level, ByteUnit, bail, trace, utf8_to_string, error};
 use evie_common::Writer;
@@ -33,6 +34,15 @@ impl CallFrame {
             ip: 0,
         }
     }
+
+    fn ip_ptr(&self) -> *mut usize {
+        &self.ip as *const usize as *mut usize
+    }
+
+    fn non_null_ptr(&self) -> NonNull<usize> {
+        NonNull::new(self.ip_ptr()).unwrap()
+    }
+
 }
 
 // pub fn define_native_fn(name: String, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
@@ -58,7 +68,9 @@ pub struct VirtualMachine<'a> {
     up_values: LinkedList<GCObjectOf<Upvalue>>,
     custom_writer: Option<Writer<'a>>,
     allocator: ObjectAllocator,
-    optional_args: Option<Args>
+    // unused for now
+    optional_args: Option<Args>,
+    ip: NonNull<usize>
 }
 
 impl<'a> std::fmt::Debug for VirtualMachine<'a> {
@@ -109,7 +121,8 @@ impl<'a> VirtualMachine<'a> {
             up_values: LinkedList::new(),
             custom_writer,
             allocator: ObjectAllocator::new(),
-            optional_args: None
+            optional_args: None,
+            ip: NonNull::new(&mut 0usize as *mut usize).expect("Null pointer"),
         }
     }
 
@@ -143,11 +156,16 @@ impl<'a> VirtualMachine<'a> {
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = Object::Closure(closure);
         self.push(Value::Object(script))?;
-        self.call_frames.push(CallFrame::new(0));
+        self.push_to_call_frame(CallFrame::new(0));
         let start_time = Instant::now();
         let result = self.run();
         info!("Ran in {} us, bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
         result
+    }
+
+    fn push_to_call_frame(&mut self, c: CallFrame) {
+        self.call_frames.push(c);
+        self.ip = self.call_frame().non_null_ptr();
     }
 
     fn reset_vm(&mut self) {
@@ -156,33 +174,27 @@ impl<'a> VirtualMachine<'a> {
     }
 
 
-    #[inline(always)]
-    fn call_frame_mut(&mut self) -> &mut CallFrame {
-        self.call_frame_peek_at_mut(0)
-    }
+    // #[inline(always)]
+    // fn call_frame_mut(&mut self) -> &mut CallFrame {
+    //     self.call_frame_peek_at_mut(0)
+    // }
     #[inline(always)]
     fn call_frame(&self) -> &CallFrame {
         self.call_frame_peek_at(0)
     }
-    #[inline(always)]
-    fn call_frame_peek_at_mut(&mut self, index: usize) -> &mut CallFrame {
-        let len = self.call_frames.len();
-        &mut self.call_frames[len - 1 - index]
-    }
+    
     #[inline(always)]
     fn call_frame_peek_at(&self, index: usize) -> &CallFrame {
         let len = self.call_frames.len();
-        &self.call_frames[len - 1 - index]
+        let index = len - 1 - index;
+        assert!(index < self.call_frames.len());
+        &self.call_frames[index]
     }
 
     #[inline(always)]
     fn ip(&self) -> usize {
-        self.call_frame().ip
-    }
-
-    #[inline(always)]
-    fn set_ip(&mut self, index: usize) {
-        self.call_frame_mut().ip = index;
+        // Safety ip is set in the run method
+        unsafe  {*self.ip.as_ref()}
     }
 
     #[inline(always)]
@@ -194,7 +206,6 @@ impl<'a> VirtualMachine<'a> {
     fn read_byte(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<ByteUnit> {
         let v = self.read_byte_at(chunk, *ip)?;
         *ip += 1;
-        self.set_ip(*ip);
         Ok(v)
     }
 
@@ -202,7 +213,6 @@ impl<'a> VirtualMachine<'a> {
     fn read_constant(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<Value> {
         let v = chunk.read_constant_at(*ip);
         *ip += 1;
-        self.set_ip(*ip);
         Ok(v)
     }
 
@@ -263,10 +273,11 @@ impl<'a> VirtualMachine<'a> {
         Ok(first << 8 | second)
     }
 
+
     fn run(&mut self) -> Result<()> {
         let mut current_function = self.current_function()?;
         let mut current_chunk  = self.current_chunk()?;
-        let ip = &mut 0;
+        let mut ip = unsafe {self.ip.as_mut()};
         info!("{} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
         #[allow(unused_assignments)]
         loop {
@@ -311,9 +322,10 @@ impl<'a> VirtualMachine<'a> {
                         return Ok(());
                     }
                     self.call_frames.pop();
+                    self.ip = self.call_frame().non_null_ptr();
+                    ip = unsafe { self.ip.as_mut() };
                     current_function = self.current_function()?;
                     current_chunk = self.current_chunk()?;
-                    *ip = self.ip();
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
                     // push the return result
@@ -403,32 +415,28 @@ impl<'a> VirtualMachine<'a> {
                     let offset = self.read_short(current_chunk.as_ref(), ip)?;
                     if is_falsey(&self.peek_at(0)?) {
                         *ip += offset as usize;
-                        self.set_ip(*ip);
                     }
                 }
                 Opcode::Jump => {
                     let offset = self.read_short(current_chunk.as_ref(), ip)?;
                     *ip += offset as usize;
-                    self.set_ip(*ip);
                 }
                 Opcode::JumpIfTrue => {
                     let offset = self.read_short(current_chunk.as_ref(), ip)?;
                     if !is_falsey(&self.peek_at(0)?) {
                         *ip +=  offset as usize;
-                        self.set_ip(*ip);
                     }
                 }
                 Opcode::Loop => {
                     let offset = self.read_short(current_chunk.as_ref(), ip)?;
                     *ip -= offset as usize;
-                    self.set_ip(*ip);
                 }
                 Opcode::Call => {
                     let arg_count = self.read_byte(current_chunk.as_ref(),ip)?;
                     self.call(arg_count)?;
                     current_function = self.current_function()?;
                     current_chunk = self.current_chunk()?;
-                    *ip = self.ip();
+                    ip = unsafe { self.ip.as_mut() };
                 }
                 Opcode::Closure => {
                     let function = self.read_function(current_chunk.as_ref(), ip)?;
@@ -812,12 +820,11 @@ impl<'a> VirtualMachine<'a> {
         arg_count: usize,
         fn_start_stack_index: usize,
     ) -> Result<()> {
-        let frame = CallFrame::new(fn_start_stack_index);
         self.check_arguments(function, arg_count)?;
         if let Function::Native(_n) = function {
             // self.call_native_function(n, arg_count, fn_start_stack_index)?;
         } else {
-            self.call_frames.push(frame);
+            self.push_to_call_frame(CallFrame::new(fn_start_stack_index));
         }
         Ok(())
     }
@@ -1232,6 +1239,7 @@ mod tests {
                 print_error(e, &mut buf);
             }
         }
+        println!("{}", utf8_to_string(&buf));
         assert_eq!(
             r#"[Runtime Error] Line: 5, message: Expected 0 arguments but got 2
 [line 5] in <fn c>

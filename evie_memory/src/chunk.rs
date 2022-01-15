@@ -71,16 +71,18 @@ impl<T: Copy> Memory<T> {
         self.inner.len()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn write_item(&mut self, item: T) {
         self.inner.push(item);
     }
 
     #[inline(always)]
     pub fn read_item_at(&self, index: usize) -> T {
+        assert!(index < self.inner.len());
         self.inner[index]
     }
 
+    #[inline(always)]
     pub fn insert_at(&mut self, index: usize, v: T) {
         self.inner[index] = v;
     }
