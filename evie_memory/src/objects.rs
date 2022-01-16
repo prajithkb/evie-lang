@@ -154,12 +154,12 @@ pub struct ObjectMetada {
 #[derive(Debug)]
 pub struct GCObjectOf<T> {
     //
-    pub metadata: ObjectMetada,
+    pub metadata: NonNull<ObjectMetada>,
     pub reference: NonNull<T>,
 }
 
 impl<T> GCObjectOf<T> {
-    pub(crate) fn new(metadata: ObjectMetada, reference: NonNull<T>) -> Self {
+    pub(crate) fn new(metadata: NonNull<ObjectMetada>, reference: NonNull<T>) -> Self {
         GCObjectOf {
             metadata,
             reference,
@@ -218,11 +218,11 @@ impl<T> Copy for GCObjectOf<T> {}
 
 #[cfg(test)]
 mod tests {
-    use crate::objects::Value;
+    use crate::objects::{Object, Value};
 
     #[test]
     fn value_size() {
-        // TODO add test
-        println!("{}", std::mem::size_of::<Value>());
+        assert_eq!(32, std::mem::size_of::<Value>());
+        assert_eq!(24, std::mem::size_of::<Object>());
     }
 }

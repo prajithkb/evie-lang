@@ -29,7 +29,10 @@ impl ObjectAllocator {
         let v = Box::new(object);
         self.increment_allocated_bytes_by(std::mem::size_of::<T>());
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(v)) };
-        GCObjectOf::new(ObjectMetada::default(), ptr)
+        self.increment_allocated_bytes_by(std::mem::size_of::<ObjectMetada>());
+        let obj = Box::new(ObjectMetada::default());
+        let obj = unsafe { NonNull::new_unchecked(Box::into_raw(obj)) };
+        GCObjectOf::new(obj, ptr)
     }
 
     /// # Safety
@@ -41,8 +44,9 @@ impl ObjectAllocator {
     {
         // Gets freed when the object is dropped
         let _object = Box::from_raw(object_of.reference.as_ptr());
-        let bytes_to_deallocate = std::mem::size_of::<T>();
-        debug_assert!(self.bytes_allocated.get() >= bytes_to_deallocate);
+        let _object_metata = Box::from_raw(object_of.metadata.as_ptr());
+        let bytes_to_deallocate = std::mem::size_of::<T>() + std::mem::size_of::<ObjectMetada>();
+        assert!(self.bytes_allocated.get() >= bytes_to_deallocate);
         self.decrement_allocated_bytes_by(bytes_to_deallocate);
     }
 
@@ -69,7 +73,7 @@ mod tests {
 
     use crate::{
         chunk::Chunk,
-        objects::{Function, GCObjectOf, Object, UserDefinedFunction, Value},
+        objects::{Function, GCObjectOf, Object, ObjectMetada, UserDefinedFunction, Value},
         ObjectAllocator,
     };
 
@@ -78,7 +82,7 @@ mod tests {
         let managed_objects = ObjectAllocator::new();
         let name: GCObjectOf<Box<str>> = managed_objects.alloc("object".into());
         assert_eq!(
-            std::mem::size_of::<Box<str>>(),
+            std::mem::size_of::<Box<str>>() + std::mem::size_of::<ObjectMetada>(),
             managed_objects.bytes_allocated()
         );
         let chunk = managed_objects.alloc(Chunk::new());
@@ -91,12 +95,15 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<Box<str>>()
                 + std::mem::size_of::<Function>()
-                + std::mem::size_of::<Chunk>(),
+                + std::mem::size_of::<Chunk>()
+                + 3 * std::mem::size_of::<ObjectMetada>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(function) };
         assert_eq!(
-            std::mem::size_of::<Box<str>>() + std::mem::size_of::<Chunk>(),
+            std::mem::size_of::<Box<str>>()
+                + std::mem::size_of::<Chunk>()
+                + 2 * std::mem::size_of::<ObjectMetada>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(name) };
@@ -104,7 +111,8 @@ mod tests {
         assert_eq!(0, managed_objects.bytes_allocated());
     }
 
-    #[test]
+    // Commented test. Uncomment for perf later
+    // #[test]
     fn timing() {
         let mut objects = ObjectAllocator::new();
         let constants = vec![

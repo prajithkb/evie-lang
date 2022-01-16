@@ -8,7 +8,6 @@ use evie_common::{bail, errors::*, ByteUnit, Writer};
 use evie_common::{log_enabled, Level};
 use evie_frontend::tokens::*;
 use evie_instructions::opcodes::Opcode;
-#[cfg(feature = "trace_enabled")]
 use evie_instructions::opcodes::{self};
 #[cfg(feature = "trace_enabled")]
 use std::io::stdout;
@@ -990,7 +989,6 @@ impl<'a> Compiler<'a> {
 
     fn emit_return_and_log(&mut self) {
         self.emit_return();
-        #[cfg(feature = "trace_enabled")]
         {
             let function = self.state.function.as_ref();
             let name = function.to_string();
@@ -999,7 +997,9 @@ impl<'a> Compiler<'a> {
                 let writer = writer_opt.as_deref_mut().expect("Writer expected");
                 opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer);
                 self.custom_writer = writer_opt;
-            } else if log_enabled!(Level::Info) {
+            }
+            #[cfg(feature = "trace_enabled")]
+            if log_enabled!(Level::Info) {
                 opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, &mut stdout());
             }
         }
@@ -1720,7 +1720,6 @@ mod tests {
             &allocator,
         );
         let _ = compiler.compile()?;
-        println!("{}", utf8_to_string(&buf));
         assert_eq!(
             r#"== <fn areWeHavingItYet> ==
 0000 0004 OpCode[GetGlobal]                 0 'const'
