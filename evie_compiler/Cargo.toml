@@ -11,3 +11,6 @@ evie_frontend = {path = "../evie_frontend"}
 evie_instructions = {path = "../evie_instructions"}
 evie_memory = {path = "../evie_memory"}
 num_enum = "0.5.4"
+
+[features]
+trace_enabled = []

@@ -1,4 +1,6 @@
-use evie_common::{debug, error, errors::*};
+#[cfg(feature = "trace_enabled")]
+use evie_common::trace;
+use evie_common::{error, errors::*};
 use std::collections::HashMap;
 
 use super::tokens::{Literal, Token, TokenType};
@@ -16,7 +18,8 @@ pub struct Scanner {
 
 impl Scanner {
     pub fn new(source: String) -> Self {
-        debug!("Scanning source\n>>\n{}\n<<", source);
+        #[cfg(feature = "trace_enabled")]
+        trace!("Scanning source\n>>\n{}\n<<", source);
         let source_len = source.chars().count();
         Scanner {
             source,

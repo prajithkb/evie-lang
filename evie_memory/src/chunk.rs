@@ -78,7 +78,12 @@ impl<T: Copy> Memory<T> {
 
     #[inline(always)]
     pub fn read_item_at(&self, index: usize) -> T {
-        assert!(index < self.inner.len());
+        assert!(
+            index < self.inner.len(),
+            "Out of bound access, index {}, len {}",
+            index,
+            self.inner.len()
+        );
         self.inner[index]
     }
 

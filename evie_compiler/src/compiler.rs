@@ -1,12 +1,18 @@
 use std::{
     collections::{linked_list::IterMut, HashMap, LinkedList},
-    io::stdout,
     iter::Rev,
 };
 
-use evie_common::{bail, errors::*, log_enabled, ByteUnit, Level, Writer};
+use evie_common::{bail, errors::*, ByteUnit, Writer};
+#[cfg(feature = "trace_enabled")]
+use evie_common::{log_enabled, Level};
 use evie_frontend::tokens::*;
-use evie_instructions::opcodes::{self, Opcode};
+use evie_instructions::opcodes::Opcode;
+#[cfg(feature = "trace_enabled")]
+use evie_instructions::opcodes::{self};
+#[cfg(feature = "trace_enabled")]
+use std::io::stdout;
+
 use evie_memory::{
     chunk::Chunk,
     objects::{Function, GCObjectOf, Object, UserDefinedFunction, Value},
@@ -164,6 +170,7 @@ pub struct Compiler<'a> {
     parse_rules: Vec<ParseRule<'a>>,
     states: LinkedList<State<'a>>,
     state: State<'a>,
+    #[allow(unused)]
     custom_writer: Option<Writer<'a>>,
     current_class: Option<ClassCompiler>,
     class_compilers: LinkedList<ClassCompiler>,
@@ -983,15 +990,18 @@ impl<'a> Compiler<'a> {
 
     fn emit_return_and_log(&mut self) {
         self.emit_return();
-        let function = self.state.function.as_ref();
-        let name = function.to_string();
-        if self.custom_writer.is_some() {
-            let mut writer_opt = self.custom_writer.take();
-            let writer = writer_opt.as_deref_mut().expect("Writer expected");
-            opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer);
-            self.custom_writer = writer_opt;
-        } else if log_enabled!(Level::Info) {
-            opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, &mut stdout());
+        #[cfg(feature = "trace_enabled")]
+        {
+            let function = self.state.function.as_ref();
+            let name = function.to_string();
+            if self.custom_writer.is_some() {
+                let mut writer_opt = self.custom_writer.take();
+                let writer = writer_opt.as_deref_mut().expect("Writer expected");
+                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer);
+                self.custom_writer = writer_opt;
+            } else if log_enabled!(Level::Info) {
+                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, &mut stdout());
+            }
         }
     }
 

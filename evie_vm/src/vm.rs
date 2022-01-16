@@ -5,10 +5,15 @@ use std::mem::{self, MaybeUninit};
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::time::{Instant};
-use evie_common::{errors::*, info, log_enabled, Level, ByteUnit, bail, trace, utf8_to_string, error};
+use evie_common::{errors::*, info, ByteUnit, bail,  utf8_to_string, error};
+#[cfg(feature="trace_enabled")]
+use evie_common::{log_enabled, Level};
+#[cfg(feature="trace_enabled")]
+use evie_common::trace;
 use evie_common::Writer;
 use evie_compiler::compiler::Compiler;
 use evie_frontend::scanner::Scanner;
+#[cfg(feature="trace_enabled")]
 use evie_frontend::tokens::pretty_print;
 use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::ObjectAllocator;
@@ -144,6 +149,7 @@ impl<'a> VirtualMachine<'a> {
         let start_time = Instant::now();
         let tokens = scanner.scan_tokens()?;
         info!("Tokens created in {} us", start_time.elapsed().as_micros());
+        #[cfg(feature = "trace_enabled")]
         if log_enabled!(Level::Trace) {
             pretty_print(tokens, &mut stdout());
         }
@@ -173,11 +179,6 @@ impl<'a> VirtualMachine<'a> {
         self.stack_top = 0;
     }
 
-
-    // #[inline(always)]
-    // fn call_frame_mut(&mut self) -> &mut CallFrame {
-    //     self.call_frame_peek_at_mut(0)
-    // }
     #[inline(always)]
     fn call_frame(&self) -> &CallFrame {
         self.call_frame_peek_at(0)
@@ -273,33 +274,34 @@ impl<'a> VirtualMachine<'a> {
         Ok(first << 8 | second)
     }
 
+    #[inline(always)]
+    fn set_ip_for_run_method(&mut self, ip_ref: &mut &mut usize) {
+        // Safety the call sites ensure that both unsafe access are safe
+        unsafe {
+            *ip_ref = self.ip.as_mut();
+        }
+    }
+
 
     fn run(&mut self) -> Result<()> {
-        let mut current_function = self.current_function()?;
         let mut current_chunk  = self.current_chunk()?;
-        let mut ip = unsafe {self.ip.as_mut()};
-        info!("{} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
-        #[allow(unused_assignments)]
+        let mut ip = &mut 0;
+        self.set_ip_for_run_method(&mut ip);
+        info!("IP: {} {} Bytes allocated by allocator so far", *ip, self.allocator.bytes_allocated());
         loop {
-            let mut buf = None;
-            if log_enabled!(Level::Trace) {
-                buf = Some(vec![]);
-                trace!(
-                    "IP: {} Current Stack: {:?}",
-                    ip,
-                    self.sanitized_stack(0..self.stack_top, false)
-                );
-                opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *ip, buf.as_mut().unwrap());
-            }
             let byte = self.read_byte(current_chunk.as_ref(), ip)?;
-            let instruction: Opcode = Opcode::from(byte);
+            let instruction = Opcode::from(byte);
+            #[cfg(feature ="trace_enabled")]
             if log_enabled!(Level::Trace) {
-                let fun_name = current_function.as_ref().to_string();
+                let mut buf = Vec::new();
+                let fun_name = self.current_function()?.as_ref().to_string();
+                opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *ip -1, &mut buf);
                 trace!(
-                    "IP: {}, In function {} Next Instruction: [{}]",
-                    ip,
+                    "IP: {}, in function {}, next instruction: {}, current Stack: {:?}, ",
+                    *ip,
                     fun_name,
-                    utf8_to_string(buf.as_ref().unwrap()).trim()
+                    utf8_to_string(&buf),   
+                    self.sanitized_stack(0..self.stack_top, false)
                 );
             }
             match instruction {
@@ -316,8 +318,7 @@ impl<'a> VirtualMachine<'a> {
                     }
                     self.call_frames.pop();
                     self.ip = self.call_frame().non_null_ptr();
-                    ip = unsafe { self.ip.as_mut() };
-                    current_function = self.current_function()?;
+                    self.set_ip_for_run_method(&mut ip);
                     current_chunk = self.current_chunk()?;
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
@@ -427,9 +428,8 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Call => {
                     let arg_count = self.read_byte(current_chunk.as_ref(),ip)?;
                     self.call(arg_count)?;
-                    current_function = self.current_function()?;
                     current_chunk = self.current_chunk()?;
-                    ip = unsafe { self.ip.as_mut() };
+                    self.set_ip_for_run_method(&mut ip);
                 }
                 Opcode::Closure => {
                     let function = self.read_function(current_chunk.as_ref(), ip)?;
@@ -994,7 +994,6 @@ impl<'a> VirtualMachine<'a> {
         self.stack_top -= 1;
         assert!(self.stack_top < STACK_SIZE);
         self.stack[self.stack_top]
-        // std::mem::take(&mut self.stack[self.stack_top])
     }
 
     pub fn free(&mut self) {

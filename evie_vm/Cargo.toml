@@ -14,3 +14,6 @@ evie_memory = {path = "../evie_memory"}
 
 [dev-dependencies]
 ctor = "0.1.21"
+
+[features]
+trace_enabled = ["evie_frontend/trace_enabled", "evie_compiler/trace_enabled"]

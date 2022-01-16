@@ -8,3 +8,6 @@ version = "0.1.0"
 [dependencies]
 evie_common = {path = "../evie_common"}
 num_enum = "0.5.4"
+
+[features]
+trace_enabled = []
