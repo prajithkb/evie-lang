@@ -165,7 +165,7 @@ impl<'a> VirtualMachine<'a> {
         self.push_to_call_frame(CallFrame::new(0));
         let start_time = Instant::now();
         let result = self.run();
-        info!("Ran in {} us, bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
+        info!("Ran in {} us, Total bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
         result
     }
 
@@ -218,16 +218,16 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn current_chunk(&self) -> Result<GCObjectOf<Chunk>> {
-        let function = self.current_function()?;
+    fn current_chunk(&self) -> GCObjectOf<Chunk> {
+        let function = self.current_function();
         match function.as_ref() {
-            Function::UserDefined(u) => Ok(u.chunk),
-            Function::Native(_) => bail!(self.runtime_error("VM BUG: Native function cannot have a chunk")),
+            Function::UserDefined(u) => u.chunk,
+            Function::Native(_) => panic!("VM BUG: Native function cannot have a chunk"),
         }
     }
 
     #[inline(always)]
-    fn current_closure(&self) -> Result<GCObjectOf<Closure>> {
+    fn current_closure(&self) -> GCObjectOf<Closure> {
         let index = self.call_frame().fn_start_stack_index;
         self.closure_from_stack(index)
     }
@@ -248,21 +248,21 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn closure_from_stack(&self, index: usize) -> Result<GCObjectOf<Closure>> {
+    fn closure_from_stack(&self, index: usize) -> GCObjectOf<Closure> {
         let v = self.get_value_from_stack(index);
         match v {
-            Value::Object(Object::Closure(c)) =>  Ok(c),
-            _ =>  bail!(self.runtime_error(&format!(
+            Value::Object(Object::Closure(c)) =>  c,
+            _ =>  panic!(
                 "VM BUG: Expected closure at stack index: {} but got ({})",
                 index, v,
-            )))
+            )
         }
     }
 
     #[inline(always)]
-    fn current_function(&self) -> Result<GCObjectOf<Function>> {
-        let v = self.current_closure()?;
-        Ok(v.as_ref().function)
+    fn current_function(&self) -> GCObjectOf<Function> {
+        let v = self.current_closure();
+       v.as_ref().function
     }
 
     #[inline(always)]
@@ -280,14 +280,14 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
-
     fn run(&mut self) -> Result<()> {
-        let mut current_chunk  = self.current_chunk()?;
+        let mut current_chunk  = self.current_chunk();
+        let mut current_chunk_ref = current_chunk.as_ref();
         let mut current_ip = &mut 0;
         self.set_ip_for_run_method(&mut current_ip);
         info!("Running VM, {} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
         loop {
-            let byte = self.read_byte(current_chunk.as_ref(), current_ip);
+            let byte = self.read_byte(current_chunk_ref, current_ip);
             let instruction = Opcode::from(byte);
             #[cfg(feature ="trace_enabled")]
             if log_enabled!(Level::Trace) {
@@ -317,7 +317,8 @@ impl<'a> VirtualMachine<'a> {
                     self.call_frames.pop();
                     self.ip = self.call_frame().non_null_ptr();
                     self.set_ip_for_run_method(&mut current_ip);
-                    current_chunk = self.current_chunk()?;
+                    current_chunk = self.current_chunk();
+                    current_chunk_ref = current_chunk.as_ref();
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
                     // push the return result
@@ -426,7 +427,8 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Call => {
                     let arg_count = self.read_byte(current_chunk.as_ref(),current_ip);
                     self.call(arg_count)?;
-                    current_chunk = self.current_chunk()?;
+                    current_chunk = self.current_chunk();
+                    current_chunk_ref = current_chunk.as_ref();
                     self.set_ip_for_run_method(&mut current_ip);
                 }
                 Opcode::Closure => {
@@ -446,7 +448,7 @@ impl<'a> VirtualMachine<'a> {
                                         self.capture_upvalue(upvalue_index_on_stack);
                                     closure.upvalues.as_mut().push(*captured_upvalue.as_ref());
                                 } else {
-                                    let current_closure = self.current_closure()?;
+                                    let current_closure = self.current_closure();
                                     let upvalue = current_closure.as_ref().upvalues.as_ref()[index as usize];
                                     closure.upvalues.as_mut().push(upvalue);
                                 }
@@ -460,7 +462,7 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::GetUpvalue => {
                     let slot = self.read_byte(current_chunk.as_ref(), current_ip);
-                    let closure = self.current_closure()?;
+                    let closure = self.current_closure();
                     let value = {
                         let upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
                         match upvalue.location {
@@ -473,7 +475,7 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::SetUpvalue => {
                     let slot = self.read_byte(current_chunk.as_ref(), current_ip);
                     let value = self.peek_at(slot as usize);
-                    let closure = self.current_closure()?;
+                    let closure = self.current_closure();
                     let mut upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
                     let location = &mut upvalue.location;
                     match location {
@@ -884,18 +886,17 @@ impl<'a> VirtualMachine<'a> {
         let all_call_frames = (&self.call_frames).iter().rev();
         for frame in all_call_frames {
             let stack_index = frame.fn_start_stack_index;
-            if let Ok(closure) = self.closure_from_stack(stack_index) {
-                let function = closure.as_ref().function.as_ref();
-                let fun_name = &function.to_string();
-                match function {
-                    Function::UserDefined(u) => {
-                        let ip = frame.ip;
-                        let line_num = u.chunk.as_ref().lines[ip];
-                        writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
-                            .expect("Write failed")
-                    }
-                    Function::Native(_) => todo!(),
-                };
+            let closure = self.closure_from_stack(stack_index);
+            let function = closure.as_ref().function.as_ref();
+            let fun_name = &function.to_string();
+            match function {
+                Function::UserDefined(u) => {
+                    let ip = frame.ip;
+                    let line_num = u.chunk.as_ref().lines[ip];
+                    writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
+                        .expect("Write failed")
+                }
+                Function::Native(_) => todo!(),
             }
         }
         if self.stack_top < STACK_SIZE {
@@ -904,21 +905,15 @@ impl<'a> VirtualMachine<'a> {
                 "Current function= {}, ip ={}, stack ={:?}",
                 &self
                     .current_function()
-                    .map(|f| f.as_ref().to_string())
-                    .unwrap_or_default(),
+                    .as_ref()
+                    .to_string(),
                 self.ip(),
                 self.sanitized_stack(0..self.stack_top, false)
             );
         }
-        if let Ok(chunk) = self.current_chunk() {
-            let line = chunk.as_ref().lines[self.ip()];
-            runtime_vm_error(line, &utf8_to_string(&error_buf))
-        } else {
-            ErrorKind::RuntimeError(format!(
-                "VM BUG Unable to detect line number, message: {}",
-                &utf8_to_string(&error_buf)
-            ))
-        }
+        let chunk = self.current_chunk();
+        let line = chunk.as_ref().lines[self.ip()];
+        runtime_vm_error(line, &utf8_to_string(&error_buf))
     }
 
     #[inline]
