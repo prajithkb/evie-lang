@@ -215,3 +215,14 @@ impl<T> AsMut<T> for GCObjectOf<T> {
 }
 
 impl<T> Copy for GCObjectOf<T> {}
+
+#[cfg(test)]
+mod tests {
+    use crate::objects::Value;
+
+    #[test]
+    fn value_size() {
+        // TODO add test
+        println!("{}", std::mem::size_of::<Value>());
+    }
+}

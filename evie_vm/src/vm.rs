@@ -10,11 +10,11 @@ use evie_common::{errors::*, info, ByteUnit, bail,  utf8_to_string, error};
 use evie_common::{log_enabled, Level};
 #[cfg(feature="trace_enabled")]
 use evie_common::trace;
+#[cfg(feature="trace_enabled")]
+use evie_frontend::tokens::pretty_print;
 use evie_common::Writer;
 use evie_compiler::compiler::Compiler;
 use evie_frontend::scanner::Scanner;
-#[cfg(feature="trace_enabled")]
-use evie_frontend::tokens::pretty_print;
 use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::ObjectAllocator;
 use evie_memory::chunk::Chunk;

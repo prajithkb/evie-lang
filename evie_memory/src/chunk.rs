@@ -28,7 +28,7 @@ impl Chunk {
         self.constants.write_item(value);
         // /After we add the constant, we return the index where the constant was appended
         // so that we can locate that same constant later.
-        (self.constants.inner.len() - 1) as ByteUnit
+        (self.constants.item_count() - 1) as ByteUnit
     }
 
     #[inline]
