@@ -199,15 +199,15 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn read_byte_at(&self, chunk: &Chunk, ip: usize) -> Result<ByteUnit> {
-        Ok(chunk.code.read_item_at(ip))
+    fn read_byte_at(&self, chunk: &Chunk, ip: usize) -> ByteUnit {
+        chunk.code.read_item_at(ip)
     }
 
     #[inline(always)]
-    fn read_byte(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<ByteUnit> {
-        let v = self.read_byte_at(chunk, *ip)?;
+    fn read_byte(&mut self, chunk: &Chunk, ip: &mut usize) -> ByteUnit{
+        let v = self.read_byte_at(chunk, *ip);
         *ip += 1;
-        Ok(v)
+        v
     }
 
     #[inline(always)]
@@ -235,23 +235,21 @@ impl<'a> VirtualMachine<'a> {
 
 
     #[inline(always)]
-    fn get_stack(&self, index: usize) -> Result<Value> {
-        assert!(index < STACK_SIZE, "Stack overflow");
+    fn get_value_from_stack(&self, index: usize) -> Value {
+        assert!(index < STACK_SIZE, "Stack overflow, stack size = {}, index = {}", STACK_SIZE, index);
         // # Safety, we check for stackoverflow before accessing it.
-        Ok(self.stack[index % STACK_SIZE])
+        self.stack[index]
     }
 
     #[inline(always)]
-    fn set_stack_mut(&mut self, index: usize, v: Value) -> Result<()> {
-        assert!(index < STACK_SIZE, "Stack overflow");
-        self.stack[index % STACK_SIZE] = v;
-        // # Safety, we check for stackoverflow before accessing it.
-        Ok(())
+    fn set_stack_mut(&mut self, index: usize, v: Value) {
+        assert!(index < STACK_SIZE, "Stack overflow, stack size = {}, index = {}", STACK_SIZE, index);
+        self.stack[index] = v;
     }
 
     #[inline(always)]
     fn closure_from_stack(&self, index: usize) -> Result<GCObjectOf<Closure>> {
-        let v = self.get_stack(index)?;
+        let v = self.get_value_from_stack(index);
         match v {
             Value::Object(Object::Closure(c)) =>  Ok(c),
             _ =>  bail!(self.runtime_error(&format!(
@@ -268,10 +266,10 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn read_short(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<u16> {
-        let first = self.read_byte(chunk, ip)? as u16;
-        let second = self.read_byte(chunk, ip)? as u16;
-        Ok(first << 8 | second)
+    fn read_short(&mut self, chunk: &Chunk, ip: &mut usize) -> u16 {
+        let first = self.read_byte(chunk, ip) as u16;
+        let second = self.read_byte(chunk, ip) as u16;
+        first << 8 | second
     }
 
     #[inline(always)]
@@ -285,11 +283,11 @@ impl<'a> VirtualMachine<'a> {
 
     fn run(&mut self) -> Result<()> {
         let mut current_chunk  = self.current_chunk()?;
-        let mut ip = &mut 0;
-        self.set_ip_for_run_method(&mut ip);
-        info!("IP: {} {} Bytes allocated by allocator so far", *ip, self.allocator.bytes_allocated());
+        let mut current_ip = &mut 0;
+        self.set_ip_for_run_method(&mut current_ip);
+        info!("Running VM, {} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
         loop {
-            let byte = self.read_byte(current_chunk.as_ref(), ip)?;
+            let byte = self.read_byte(current_chunk.as_ref(), current_ip);
             let instruction = Opcode::from(byte);
             #[cfg(feature ="trace_enabled")]
             if log_enabled!(Level::Trace) {
@@ -306,7 +304,7 @@ impl<'a> VirtualMachine<'a> {
             }
             match instruction {
                 Opcode::Constant => {
-                    let constant = self.read_constant(current_chunk.as_ref(), ip)?;
+                    let constant = self.read_constant(current_chunk.as_ref(), current_ip)?;
                     self.push(constant)?;
                 }
                 Opcode::Return => {
@@ -318,7 +316,7 @@ impl<'a> VirtualMachine<'a> {
                     }
                     self.call_frames.pop();
                     self.ip = self.call_frame().non_null_ptr();
-                    self.set_ip_for_run_method(&mut ip);
+                    self.set_ip_for_run_method(&mut current_ip);
                     current_chunk = self.current_chunk()?;
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
@@ -326,7 +324,7 @@ impl<'a> VirtualMachine<'a> {
                     self.push(result)?;
                 }
                 Opcode::Negate => {
-                    if let Value::Number(v) = self.peek_at(0)? {
+                    if let Value::Number(v) = self.peek_at(0) {
                         let result = Value::Number(-v);
                         self.pop();
                         self.push(result)?;
@@ -367,11 +365,11 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::DefineGlobal => {
                     let value = self.pop();
-                    let name = self.read_string(current_chunk.as_ref(), ip)?;
+                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
                     self.runtime_values.insert(name.as_ref().clone(), value);
                 }
                 Opcode::GetGlobal => {
-                    let name = self.read_string(current_chunk.as_ref(), ip)?;
+                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
                     let value = self.runtime_values.get(name.as_ref());
                     if let Some(v) = value {
                         let v = *v;
@@ -381,8 +379,8 @@ impl<'a> VirtualMachine<'a> {
                     }
                 }
                 Opcode::SetGlobal => {
-                    let name = self.read_string(current_chunk.as_ref(), ip)?;
-                    let value = self.peek_at(0)?;
+                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
+                    let value = self.peek_at(0);
                     let v = self.runtime_values.get_mut(name.as_ref());
                     match v {
                         Some(e) => {
@@ -395,52 +393,52 @@ impl<'a> VirtualMachine<'a> {
                     }
                 }
                 Opcode::GetLocal => {
-                    let index = self.read_byte(current_chunk.as_ref(), ip)? as usize;
+                    let index = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
                     let fn_start_pointer = self.call_frame().fn_start_stack_index;
-                    let v = self.get_stack(fn_start_pointer + index)?;
+                    let v = self.get_value_from_stack(fn_start_pointer + index);
                     self.push(v)?;
                 }
                 Opcode::SetLocal => {
-                    let index = self.read_byte(current_chunk.as_ref(), ip)?;
+                    let index = self.read_byte(current_chunk.as_ref(), current_ip);
                     let fn_start_pointer = self.call_frame().fn_start_stack_index;
-                    self.stack[fn_start_pointer + index as usize] = self.peek_at(0)?;
+                    self.stack[fn_start_pointer + index as usize] = self.peek_at(0);
                 }
                 Opcode::JumpIfFalse => {
-                    let offset = self.read_short(current_chunk.as_ref(), ip)?;
-                    if is_falsey(&self.peek_at(0)?) {
-                        *ip += offset as usize;
+                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    if is_falsey(&self.peek_at(0)) {
+                        *current_ip += offset as usize;
                     }
                 }
                 Opcode::Jump => {
-                    let offset = self.read_short(current_chunk.as_ref(), ip)?;
-                    *ip += offset as usize;
+                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    *current_ip += offset as usize;
                 }
                 Opcode::JumpIfTrue => {
-                    let offset = self.read_short(current_chunk.as_ref(), ip)?;
-                    if !is_falsey(&self.peek_at(0)?) {
-                        *ip +=  offset as usize;
+                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    if !is_falsey(&self.peek_at(0)) {
+                        *current_ip +=  offset as usize;
                     }
                 }
                 Opcode::Loop => {
-                    let offset = self.read_short(current_chunk.as_ref(), ip)?;
-                    *ip -= offset as usize;
+                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    *current_ip -= offset as usize;
                 }
                 Opcode::Call => {
-                    let arg_count = self.read_byte(current_chunk.as_ref(),ip)?;
+                    let arg_count = self.read_byte(current_chunk.as_ref(),current_ip);
                     self.call(arg_count)?;
                     current_chunk = self.current_chunk()?;
-                    self.set_ip_for_run_method(&mut ip);
+                    self.set_ip_for_run_method(&mut current_ip);
                 }
                 Opcode::Closure => {
-                    let function = self.read_function(current_chunk.as_ref(), ip)?;
+                    let function = self.read_function(current_chunk.as_ref(), current_ip)?;
                     let current_fn_stack_ptr = self.call_frame().fn_start_stack_index;
                     let upvalues = self.allocator.alloc(Vec::<Upvalue>::new());
                     let mut closure = Closure::new(function, upvalues);
                     match function.as_ref() {
                         Function::UserDefined(u) => {
                             for _ in 0..u.upvalue_count {
-                                let is_local = self.read_byte(current_chunk.as_ref(), ip)? > 0;
-                                let index = self.read_byte(current_chunk.as_ref(), ip)?;
+                                let is_local = self.read_byte(current_chunk.as_ref(), current_ip) > 0;
+                                let index = self.read_byte(current_chunk.as_ref(), current_ip);
                                 if is_local {
                                     let upvalue_index_on_stack =
                                         current_fn_stack_ptr + index as usize;
@@ -461,27 +459,27 @@ impl<'a> VirtualMachine<'a> {
                     self.push(stack_value)?;
                 }
                 Opcode::GetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), ip)?;
+                    let slot = self.read_byte(current_chunk.as_ref(), current_ip);
                     let closure = self.current_closure()?;
                     let value = {
                         let upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
                         match upvalue.location {
-                            Location::Stack(index) => self.get_stack(index)?,
+                            Location::Stack(index) => self.get_value_from_stack(index),
                             Location::Heap(shared_value) => shared_value,
                         }
                     };
                     self.push(value)?;
                 }
                 Opcode::SetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), ip)?;
-                    let value = self.peek_at(slot as usize)?;
+                    let slot = self.read_byte(current_chunk.as_ref(), current_ip);
+                    let value = self.peek_at(slot as usize);
                     let closure = self.current_closure()?;
                     let mut upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
                     let location = &mut upvalue.location;
                     match location {
                         Location::Stack(index) => {
                             let i = *index;
-                            self.set_stack_mut(i, value)?;
+                            self.set_stack_mut(i, value);
                         }
                         Location::Heap(shared_value) => {
                             let sv = &mut *shared_value;
@@ -753,7 +751,7 @@ impl<'a> VirtualMachine<'a> {
 
     fn call(&mut self, arg_count: ByteUnit) -> Result<()> {
         let arg_count = arg_count as usize;
-        let value = self.peek_at(arg_count)?;
+        let value = self.peek_at(arg_count);
         let start_index = self.stack_top - 1 - arg_count;
         match value {
             Value::Object(Object::Closure(c)) => {
@@ -924,9 +922,9 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline]
-    fn peek_at(&self, distance: usize) -> Result<Value> {
+    fn peek_at(&self, distance: usize) -> Value {
         let top = self.stack_top;
-        self.get_stack(top - 1 - distance)
+        self.get_value_from_stack(top - 1 - distance)
     }
 
     #[inline]
@@ -938,7 +936,7 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline]
     fn binary_op(&mut self, op: fn(f64, f64) -> Value) -> Result<()> {
-        let (left, right) = (self.peek_at(1)?, self.peek_at(0)?);
+        let (left, right) = (self.peek_at(1), self.peek_at(0));
         let (left, right) = match (left, right) {
             (Value::Number(l), Value::Number(r)) => (l, r),
             _ => bail!(self.runtime_error("Can perform binary operations only on numbers.")),
@@ -947,7 +945,7 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn add(&mut self) -> Result<()> {
-        match (self.peek_at(1)?, self.peek_at(0)?) {
+        match (self.peek_at(1), self.peek_at(0)) {
             (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
                 let mut concatenated_string = String::new();
                         concatenated_string.push_str(l.as_ref());
@@ -962,8 +960,8 @@ impl<'a> VirtualMachine<'a> {
             (Value::Number(_), Value::Number(_)) => self.binary_op(|a, b| Value::Number(a + b)),
             _ => bail!(self.runtime_error(&format!(
                 "Add can be perfomed only on numbers or strings, got {} and {}",
-                self.peek_at(1)?,
-                self.peek_at(0)?
+                self.peek_at(1),
+                self.peek_at(0)
             ))),
         }
     }

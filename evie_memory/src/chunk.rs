@@ -84,7 +84,7 @@ impl<T: Copy> Memory<T> {
             index,
             self.inner.len()
         );
-        self.inner[index]
+        unsafe { *self.inner.get_unchecked(index) }
     }
 
     #[inline(always)]
