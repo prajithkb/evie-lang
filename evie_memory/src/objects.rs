@@ -94,14 +94,14 @@ impl Display for Closure {
 #[derive(Debug, Clone)]
 pub enum Function {
     UserDefined(UserDefinedFunction),
-    Native(String),
+    Native(NativeFunction),
 }
 
 impl Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Function::UserDefined(u) => f.write_str(&u.to_string()),
-            Function::Native(_) => todo!(),
+            Function::Native(n) => f.write_str(&n.to_string()),
         }
     }
 }
@@ -121,6 +121,36 @@ impl Display for UserDefinedFunction {
         } else {
             f.write_str("<fn script>")
         }
+    }
+}
+
+pub type NativeFn = fn(Vec<Value>) -> Value;
+
+#[derive(Clone, new)]
+pub struct NativeFunction {
+    pub name: GCObjectOf<Box<str>>,
+    pub arity: usize,
+    pub function: NativeFn,
+}
+
+impl std::fmt::Debug for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFunction")
+            .field("name", self.name.as_ref())
+            .finish()
+    }
+}
+
+impl Display for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("native <fn {}>", self.name.as_ref()))
+    }
+}
+
+impl NativeFunction {
+    pub fn call(&self, arguments: Vec<Value>) -> Value {
+        let function = self.function;
+        function(arguments)
     }
 }
 

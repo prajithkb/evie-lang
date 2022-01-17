@@ -1,8 +1,16 @@
 [package]
+edition = "2021"
 name = "evie_native"
 version = "0.1.0"
-edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+evie_common = {path = "../evie_common"}
+evie_memory = {path = "../evie_memory"}
+
+[dev-dependencies]
+ctor = "0.1.21"
+
+[features]
+trace_enabled = []

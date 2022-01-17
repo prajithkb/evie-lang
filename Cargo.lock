@@ -271,6 +271,7 @@ name = "evie"
 version = "0.1.0"
 dependencies = [
  "evie_common",
+ "evie_native",
  "evie_vm",
 ]
 
@@ -335,6 +336,11 @@ dependencies = [
 [[package]]
 name = "evie_native"
 version = "0.1.0"
+dependencies = [
+ "ctor",
+ "evie_common",
+ "evie_memory",
+]
 
 [[package]]
 name = "evie_vm"
@@ -346,6 +352,7 @@ dependencies = [
  "evie_frontend",
  "evie_instructions",
  "evie_memory",
+ "evie_native",
 ]
 
 [[package]]

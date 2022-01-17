@@ -11,9 +11,10 @@ evie_compiler = {path = "../evie_compiler"}
 evie_frontend = {path = "../evie_frontend"}
 evie_instructions = {path = "../evie_instructions"}
 evie_memory = {path = "../evie_memory"}
+evie_native = {path = "../evie_native"}
 
 [dev-dependencies]
 ctor = "0.1.21"
 
 [features]
-trace_enabled = ["evie_frontend/trace_enabled", "evie_compiler/trace_enabled"]
+trace_enabled = ["evie_frontend/trace_enabled", "evie_compiler/trace_enabled", "evie_native/trace_enabled"]

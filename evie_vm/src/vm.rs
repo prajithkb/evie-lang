@@ -18,7 +18,7 @@ use evie_frontend::scanner::Scanner;
 use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::ObjectAllocator;
 use evie_memory::chunk::Chunk;
-use evie_memory::objects::{Closure, Location};
+use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn};
 use evie_memory::objects::{Value, Object, Function, GCObjectOf, Upvalue};
 
 use crate::runtime_memory::Values;
@@ -50,14 +50,12 @@ impl CallFrame {
 
 }
 
-// pub fn define_native_fn(name: String, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
-//     let key = SharedString::from_str(&name);
-//     let object = vm.allocate_object(Object::Function(Rc::new(Function::Native(
-//         NativeFunction::new(key.clone(), arity, native_fn)))));
-//     let stack_value =StackValue::Object(ObjectPtr::new(object));
-//     vm.runtime_values.insert(key, stack_value)
-    
-// }
+pub fn define_native_fn(name: &str, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
+    let box_str =name.to_string().into_boxed_str();
+    let name = vm.allocator.alloc(box_str.clone());
+    let native_function = vm.allocator.alloc(Function::Native(NativeFunction::new(name, arity, native_fn)));
+    vm.runtime_values.insert(box_str, Value::Object(Object::Function(native_function)));
+}
 
 #[derive(Default)]
 pub struct Args {
@@ -130,17 +128,6 @@ impl<'a> VirtualMachine<'a> {
             ip: NonNull::new(&mut 0usize as *mut usize).expect("Null pointer"),
         }
     }
-
-    // pub fn clock() -> NativeFn {
-    //     Rc::new(|_| {
-    //         let start = SystemTime::now();
-    //         let since_the_epoch = start
-    //             .duration_since(UNIX_EPOCH)
-    //             .expect("Time went backwards")
-    //             .as_secs_f64();
-    //         StackValue::Number(since_the_epoch)
-    //     })
-    // }
 
     pub fn interpret(&mut self, source: String, optional_args: Option<Args>) -> Result<()> {
         self.reset_vm();
@@ -452,7 +439,7 @@ impl<'a> VirtualMachine<'a> {
                                 }
                             }
                         }
-                        Function::Native(_) => todo!(),
+                        Function::Native(_) => panic!("{}", self.runtime_error("VM BUG: Cannot have Native function")),
                     }
                     let object = self.allocator.alloc(closure);
                     let stack_value = Value::Object(Object::Closure(object));
@@ -818,29 +805,29 @@ impl<'a> VirtualMachine<'a> {
         fn_start_stack_index: usize,
     ) -> Result<()> {
         self.check_arguments(function, arg_count)?;
-        if let Function::Native(_n) = function {
-            // self.call_native_function(n, arg_count, fn_start_stack_index)?;
+        if let Function::Native(n) = function {
+            self.call_native_function(n, arg_count, fn_start_stack_index)?;
         } else {
             self.push_to_call_frame(CallFrame::new(fn_start_stack_index));
         }
         Ok(())
     }
 
-    // fn call_native_function(
-    //     &mut self,
-    //     native_function: &NativeFunction,
-    //     arg_count: usize,
-    //     fn_start_stack_index: usize,
-    // ) -> Result<()> {
-    //     let result = native_function.call(vec![]);
-    //     let mut arguments = Vec::new();
-    //     for i in 0..arg_count {
-    //         arguments.push(std::mem::take(&mut self.stack[fn_start_stack_index + i]));
-    //     }
-    //     self.stack_top = fn_start_stack_index + 1;
-    //     self.set_stack_mut(fn_start_stack_index, result)?;
-    //     Ok(())
-    // }
+    fn call_native_function(
+        &mut self,
+        native_function: &NativeFunction,
+        arg_count: usize,
+        fn_start_stack_index: usize,
+    ) -> Result<()> {
+        let mut arguments = Vec::new();
+        for v in &self.stack[fn_start_stack_index..(fn_start_stack_index + arg_count)] {
+            arguments.push(*v);
+        }
+        let result = native_function.call(arguments);
+        self.stack_top = fn_start_stack_index + 1;
+        self.set_stack_mut(fn_start_stack_index, result);
+        Ok(())
+    }
 
     #[inline]
     fn check_arguments(&mut self, function: &Function, arg_count: usize) -> Result<bool> {
@@ -900,7 +887,7 @@ impl<'a> VirtualMachine<'a> {
                     writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
                         .expect("Write failed")
                 }
-                Function::Native(_) => todo!(),
+                Function::Native(_) => panic!("VM BUG: Cannot have native function in call frame"),
             }
         }
         if self.stack_top < STACK_SIZE {
@@ -1050,10 +1037,11 @@ fn print_stack_value(value: Value, writer: &mut dyn Write) {
 mod tests {
 
     use evie_common::{errors::*, utf8_to_string, print_error};
+    use evie_native::clock;
 
     use crate::vm::VirtualMachine;
 
-    use super::STACK_SIZE;
+    use super::{STACK_SIZE, define_native_fn};
     
     #[test]
     fn vm_numeric_expressions() -> Result<()> {
@@ -1544,18 +1532,18 @@ mod tests {
         Ok(())
     }
 
-    // #[test]
-    // fn vm_native_clock() -> Result<()> {
-    //     let mut buf = vec![];
-    //     let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
-    //     let source = r#"
-    //     print clock();
-    //     "#;
-    //     define_native_fn("clock".to_string(), 0, &mut vm, VirtualMachine::clock());
-    //     let _ = vm.interpret(source.to_string(), None)?;
-    //     let output = utf8_to_string(&buf);
-    //     // This will fail if it is not f64
-    //     let _ = output.trim().parse::<f64>().unwrap();
-    //     Ok(())
-    // }
+    #[test]
+    fn vm_native_clock() -> Result<()> {
+        let mut buf = vec![];
+        let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
+        let source = r#"
+        print clock();
+        "#;
+        define_native_fn("clock", 0, &mut vm, clock);
+        let _ = vm.interpret(source.to_string(), None)?;
+        let output = utf8_to_string(&buf);
+        // This will fail if it is not f64
+        let _ = output.trim().parse::<f64>().unwrap();
+        Ok(())
+    }
 }

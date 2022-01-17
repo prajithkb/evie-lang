@@ -4,6 +4,7 @@ use std::{
 };
 
 use evie_common::{errors::*, print_error};
+use evie_native::clock;
 use evie_vm::vm::VirtualMachine;
 
 pub struct Runner<'a> {
@@ -13,7 +14,9 @@ pub struct Runner<'a> {
 impl<'a> Runner<'a> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let vm = VirtualMachine::new();
+        let mut vm = VirtualMachine::new();
+        // Define native functions
+        evie_vm::vm::define_native_fn("clock", 0, &mut vm, clock);
         Runner { vm }
     }
 

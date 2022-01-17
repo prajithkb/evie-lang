@@ -1,6 +1,7 @@
 use std::{
     collections::{linked_list::IterMut, HashMap, LinkedList},
     iter::Rev,
+    panic,
 };
 
 use evie_common::{bail, errors::*, ByteUnit, Writer};
@@ -474,7 +475,7 @@ impl<'a> Compiler<'a> {
         while self.current().token_type != TokenType::RightParen {
             match self.state.function.as_mut() {
                 Function::UserDefined(u) => u.arity += 1,
-                Function::Native(_) => todo!(),
+                Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
             }
             let constant = self.parse_variable("Expect parameter name")?;
             self.define_variable(constant);
@@ -606,7 +607,7 @@ impl<'a> Compiler<'a> {
                 u.upvalue_count += 1;
                 (u.upvalue_count - 1) as ByteUnit
             }
-            Function::Native(_) => todo!(),
+            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
         }
     }
 
@@ -1094,7 +1095,7 @@ impl<'a> Compiler<'a> {
     fn current_chunk_mut(&mut self) -> &mut Chunk {
         match self.state.function.as_mut() {
             Function::UserDefined(u) => u.chunk.as_mut(),
-            Function::Native(_) => todo!(),
+            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
         }
     }
 
@@ -1102,7 +1103,7 @@ impl<'a> Compiler<'a> {
     fn current_chunk(&self) -> &Chunk {
         match self.state.function.as_ref() {
             Function::UserDefined(u) => u.chunk.as_ref(),
-            Function::Native(_) => todo!(),
+            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
         }
     }
 
