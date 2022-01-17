@@ -82,7 +82,7 @@ impl Eq for GCObjectOf<Box<str>> {}
 #[derive(Debug, Clone, Copy, new)]
 pub struct Closure {
     pub function: GCObjectOf<Function>,
-    pub upvalues: GCObjectOf<Vec<Upvalue>>,
+    pub upvalues: GCObjectOf<Vec<GCObjectOf<Upvalue>>>,
 }
 
 impl Display for Closure {
@@ -132,7 +132,7 @@ pub struct Upvalue {
 #[derive(Debug, Clone, Copy)]
 pub enum Location {
     Stack(usize),
-    Heap(Value),
+    Heap(GCObjectOf<Value>),
 }
 
 impl Upvalue {
@@ -151,11 +151,20 @@ pub struct ObjectMetada {
 
 /// A Managed Object (garbage collected) in Evie. It contains the metadata and a pointer to the actual object.
 /// This is created and destroyed using [super::ObjectAllocator]
-#[derive(Debug)]
 pub struct GCObjectOf<T> {
     //
     pub metadata: NonNull<ObjectMetada>,
     pub reference: NonNull<T>,
+}
+
+impl<T> std::fmt::Debug for GCObjectOf<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GCObjectOf")
+            .field("metadata", &self.metadata)
+            .field("reference", &self.reference)
+            .field("type", &std::any::type_name::<T>())
+            .finish()
+    }
 }
 
 impl<T> GCObjectOf<T> {

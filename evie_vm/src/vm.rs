@@ -156,12 +156,12 @@ impl<'a> VirtualMachine<'a> {
         let start_time = Instant::now();
         let compiler = Compiler::new(tokens, &self.allocator);
         let main_function = compiler.compile()?;
-        let upvalues = self.allocator.alloc(Vec::<Upvalue>::new());
+        let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
         info!("Compiled in {} us", start_time.elapsed().as_micros());
         self.check_arguments(main_function.as_ref(), 0)?;
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = Object::Closure(closure);
-        self.push(Value::Object(script))?;
+        self.push_to_stack(Value::Object(script));
         self.push_to_call_frame(CallFrame::new(0));
         let start_time = Instant::now();
         let result = self.run();
@@ -222,7 +222,7 @@ impl<'a> VirtualMachine<'a> {
         let function = self.current_function();
         match function.as_ref() {
             Function::UserDefined(u) => u.chunk,
-            Function::Native(_) => panic!("VM BUG: Native function cannot have a chunk"),
+            Function::Native(_) => panic!("{}", self.runtime_error("VM BUG: Native function cannot have a chunk")),
         }
     }
 
@@ -236,14 +236,13 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn get_value_from_stack(&self, index: usize) -> Value {
-        assert!(index < STACK_SIZE, "Stack overflow, stack size = {}, index = {}", STACK_SIZE, index);
-        // # Safety, we check for stackoverflow before accessing it.
+        assert!(self.stack_top < STACK_SIZE, "{}", self.runtime_error(&format!("Stack overflow, stack size = {}, index = {}", STACK_SIZE, self.stack_top)));
         self.stack[index]
     }
 
     #[inline(always)]
     fn set_stack_mut(&mut self, index: usize, v: Value) {
-        assert!(index < STACK_SIZE, "Stack overflow, stack size = {}, index = {}", STACK_SIZE, index);
+        assert!(self.stack_top < STACK_SIZE, "{}", self.runtime_error(&format!("Stack overflow, stack size = {}, index = {}", STACK_SIZE, self.stack_top)));
         self.stack[index] = v;
     }
 
@@ -252,10 +251,8 @@ impl<'a> VirtualMachine<'a> {
         let v = self.get_value_from_stack(index);
         match v {
             Value::Object(Object::Closure(c)) =>  c,
-            _ =>  panic!(
-                "VM BUG: Expected closure at stack index: {} but got ({})",
-                index, v,
-            )
+            _ =>  panic!("{}", self.runtime_error(&format!("VM BUG: Expected closure at stack index: {} but got ({})",
+            index, v,)))
         }
     }
 
@@ -285,32 +282,32 @@ impl<'a> VirtualMachine<'a> {
         let mut current_chunk_ref = current_chunk.as_ref();
         let mut current_ip = &mut 0;
         self.set_ip_for_run_method(&mut current_ip);
-        info!("Running VM, {} Bytes allocated by allocator so far", self.allocator.bytes_allocated());
+        info!("Running VM, {} Bytes allocated by by compiler", self.allocator.bytes_allocated());
         loop {
             let byte = self.read_byte(current_chunk_ref, current_ip);
             let instruction = Opcode::from(byte);
             #[cfg(feature ="trace_enabled")]
             if log_enabled!(Level::Trace) {
                 let mut buf = Vec::new();
-                let fun_name = self.current_function()?.as_ref().to_string();
-                opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *ip -1, &mut buf);
+                let fun_name = self.current_function().as_ref().to_string();
+                opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *current_ip -1, &mut buf);
                 trace!(
-                    "IP: {}, in function {}, next instruction: {}, current Stack: {:?}, ",
-                    *ip,
+                    "ip: {},function {}, stack: {:?}, next instruction: {}",
+                    *current_ip,
                     fun_name,
-                    utf8_to_string(&buf),   
-                    self.sanitized_stack(0..self.stack_top, false)
+                    self.sanitized_stack(0..self.stack_top, false),
+                    utf8_to_string(&buf).replace(" ",".").trim(),   
                 );
             }
             match instruction {
                 Opcode::Constant => {
                     let constant = self.read_constant(current_chunk.as_ref(), current_ip)?;
-                    self.push(constant)?;
+                    self.push_to_stack(constant);
                 }
                 Opcode::Return => {
                     let fn_starting_pointer = self.call_frame().fn_start_stack_index;
-                    let result = self.pop();
-                    self.close_upvalues(fn_starting_pointer)?;
+                    let result = self.pop_from_stack();
+                    self.close_upvalues(fn_starting_pointer);
                     if self.call_frames.len() == 1 {
                         return Ok(());
                     }
@@ -322,13 +319,13 @@ impl<'a> VirtualMachine<'a> {
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
                     // push the return result
-                    self.push(result)?;
+                    self.push_to_stack(result);
                 }
                 Opcode::Negate => {
                     if let Value::Number(v) = self.peek_at(0) {
                         let result = Value::Number(-v);
-                        self.pop();
-                        self.push(result)?;
+                        self.pop_from_stack();
+                        self.push_to_stack(result);
                     } else {
                         bail!(self.runtime_error("Can only negate numbers."));
                     }
@@ -337,16 +334,16 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Subtract => self.binary_op(|a, b| Value::Number(a - b))?,
                 Opcode::Multiply => self.binary_op(|a, b| Value::Number(a * b))?,
                 Opcode::Divide => self.binary_op(|a, b| Value::Number(a / b))?,
-                Opcode::Nil => self.push(Value::Nil)?,
-                Opcode::True => self.push(Value::Boolean(true))?,
-                Opcode::False => self.push(Value::Boolean(false))?,
+                Opcode::Nil => self.push_to_stack(Value::Nil),
+                Opcode::True => self.push_to_stack(Value::Boolean(true)),
+                Opcode::False => self.push_to_stack(Value::Boolean(false)),
                 Opcode::Not => {
-                    let v = self.pop();
-                    self.push(Value::Boolean(is_falsey(&v)))?
+                    let v = self.pop_from_stack();
+                    self.push_to_stack(Value::Boolean(is_falsey(&v)))
                 }
                 Opcode::BangEqual => {
                     let v = self.equals()?;
-                    self.push(Value::Boolean(!v))?
+                    self.push_to_stack(Value::Boolean(!v))
                 }
                 Opcode::Greater => self.binary_op(|a, b| Value::Boolean(a > b))?,
                 Opcode::GreaterEqual => self.binary_op(|a, b| Value::Boolean(a >= b))?,
@@ -354,18 +351,18 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::LessEqual => self.binary_op(|a, b| Value::Boolean(a <= b))?,
                 Opcode::EqualEqual => {
                     let v = self.equals()?;
-                    self.push(Value::Boolean(v))?
+                    self.push_to_stack(Value::Boolean(v))
                 }
                 Opcode::Print => {
-                    let v = self.pop();
+                    let v = self.pop_from_stack();
                     self.print_stack_value(v);
                     self.new_line();
                 }
                 Opcode::Pop => {
-                    self.pop();
+                    self.pop_from_stack();
                 }
                 Opcode::DefineGlobal => {
-                    let value = self.pop();
+                    let value = self.pop_from_stack();
                     let name = self.read_string(current_chunk.as_ref(), current_ip)?;
                     self.runtime_values.insert(name.as_ref().clone(), value);
                 }
@@ -374,7 +371,7 @@ impl<'a> VirtualMachine<'a> {
                     let value = self.runtime_values.get(name.as_ref());
                     if let Some(v) = value {
                         let v = *v;
-                        self.push(v)?
+                        self.push_to_stack(v)
                     } else {
                         bail!(self.runtime_error(&format!("Undefined variable '{}'", name.as_ref())))
                     }
@@ -397,7 +394,7 @@ impl<'a> VirtualMachine<'a> {
                     let index = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
                     let fn_start_pointer = self.call_frame().fn_start_stack_index;
                     let v = self.get_value_from_stack(fn_start_pointer + index);
-                    self.push(v)?;
+                    self.push_to_stack(v);
                 }
                 Opcode::SetLocal => {
                     let index = self.read_byte(current_chunk.as_ref(), current_ip);
@@ -434,7 +431,7 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Closure => {
                     let function = self.read_function(current_chunk.as_ref(), current_ip)?;
                     let current_fn_stack_ptr = self.call_frame().fn_start_stack_index;
-                    let upvalues = self.allocator.alloc(Vec::<Upvalue>::new());
+                    let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
                     let mut closure = Closure::new(function, upvalues);
                     match function.as_ref() {
                         Function::UserDefined(u) => {
@@ -446,7 +443,8 @@ impl<'a> VirtualMachine<'a> {
                                         current_fn_stack_ptr + index as usize;
                                     let captured_upvalue =
                                         self.capture_upvalue(upvalue_index_on_stack);
-                                    closure.upvalues.as_mut().push(*captured_upvalue.as_ref());
+                                    let upvalues = closure.upvalues.as_mut();
+                                    upvalues.push(captured_upvalue);
                                 } else {
                                     let current_closure = self.current_closure();
                                     let upvalue = current_closure.as_ref().upvalues.as_ref()[index as usize];
@@ -458,40 +456,43 @@ impl<'a> VirtualMachine<'a> {
                     }
                     let object = self.allocator.alloc(closure);
                     let stack_value = Value::Object(Object::Closure(object));
-                    self.push(stack_value)?;
+                    self.push_to_stack(stack_value);
                 }
                 Opcode::GetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), current_ip);
+                    let slot = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
                     let closure = self.current_closure();
                     let value = {
-                        let upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
-                        match upvalue.location {
+                        let upvalues = closure.as_ref().upvalues.as_ref();
+                        assert!(slot < upvalues.len(), "{}", self.runtime_error("VM BUG: Invalid up value index"));
+                        let upvalue = upvalues[slot];
+                        match upvalue.as_ref().location {
                             Location::Stack(index) => self.get_value_from_stack(index),
-                            Location::Heap(shared_value) => shared_value,
+                            Location::Heap(shared_value) => *shared_value.as_ref(),
                         }
                     };
-                    self.push(value)?;
+                    self.push_to_stack(value);
                 }
                 Opcode::SetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), current_ip);
+                    let slot = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
                     let value = self.peek_at(slot as usize);
                     let closure = self.current_closure();
-                    let mut upvalue = closure.as_ref().upvalues.as_ref()[slot as usize];
-                    let location = &mut upvalue.location;
+                    let upvalues = closure.as_ref().upvalues.as_ref();
+                    assert!(slot < upvalues.len(), "{}", self.runtime_error("VM BUG: Invalid up value index"));
+                    let mut upvalue = upvalues[slot];
+                    let location = &mut upvalue.as_mut().location;
                     match location {
                         Location::Stack(index) => {
                             let i = *index;
                             self.set_stack_mut(i, value);
                         }
                         Location::Heap(shared_value) => {
-                            let sv = &mut *shared_value;
-                            *sv = value;
+                            *shared_value.as_mut() = value
                         }
                     }
                 }
                 Opcode::CloseUpvalue => {
-                    self.close_upvalues(self.stack_top - 1)?;
-                    self.pop();
+                    self.close_upvalues(self.stack_top - 1);
+                    self.pop_from_stack();
                 }
                 Opcode::Class => {
                     // let class = self.read_string(current_chunk, ip)?;
@@ -706,25 +707,28 @@ impl<'a> VirtualMachine<'a> {
         s
     }
 
-    fn close_upvalues(&mut self, last_index: usize) -> Result<()> {
-        let upvalue_iter = self.up_values.iter_mut().rev();
+    fn close_upvalues(&mut self, last_index: usize){
+        let upvalue_iter = self.up_values.iter().rev();
         let mut count = 0;
-        let _v: Result<()> = upvalue_iter
-            .map(|u| u.as_mut())
-            .take_while(|u| match &u.location {
-                Location::Stack(index) => *index >= last_index,
+        upvalue_iter
+            .take_while(|u| match u.as_ref().location {
+                Location::Stack(index) => index >= last_index,
                 _ => false,
             })
-            .try_for_each(|u| {
+            .for_each(|u| {
                 count += 1;
-                if let Location::Stack(_index) = u.location {
-                    // let value = self.get_stack(index)?;
-                    u.location = Location::Heap(Value::Nil);
+                let mut u = *u;
+                let location = u.as_ref().location;
+                if let Location::Stack(index) = location {
+                    let stack_value = self.get_value_from_stack(index);
+                    // Moving from stack to heap
+                    let heap_value = self.allocator.alloc(stack_value);
+                    u.as_mut().location = Location::Heap(heap_value);
                 }
-                Ok(())
             });
+        
+        // drop the ones we don't need.
         let _captured_values = self.up_values.split_off(self.up_values.len() - count);
-        Ok(())
     }
 
     fn capture_upvalue(&mut self, stack_index: usize) -> GCObjectOf<Upvalue> {
@@ -924,8 +928,8 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline]
     fn equals(&mut self) -> Result<bool> {
-        let left = self.pop();
-        let right = self.pop();
+        let left = self.pop_from_stack();
+        let right = self.pop_from_stack();
         value_equals(left, right)
     }
 
@@ -936,7 +940,8 @@ impl<'a> VirtualMachine<'a> {
             (Value::Number(l), Value::Number(r)) => (l, r),
             _ => bail!(self.runtime_error("Can perform binary operations only on numbers.")),
         };
-        self.binary_op_with_num(left, right, op)
+        self.binary_op_with_num(left, right, op);
+        Ok(())
     }
 
     fn add(&mut self) -> Result<()> {
@@ -945,11 +950,11 @@ impl<'a> VirtualMachine<'a> {
                 let mut concatenated_string = String::new();
                         concatenated_string.push_str(l.as_ref());
                         concatenated_string.push_str(r.as_ref());
-                        self.pop();
-                        self.pop();
+                        self.pop_from_stack();
+                        self.pop_from_stack();
                         let allocated_string = self.allocator.alloc(concatenated_string.into_boxed_str());
                         let sv = Value::Object(Object::String(allocated_string));
-                        self.push(sv)?;
+                        self.push_to_stack(sv);
                         Ok(())
             }
             (Value::Number(_), Value::Number(_)) => self.binary_op(|a, b| Value::Number(a + b)),
@@ -967,23 +972,21 @@ impl<'a> VirtualMachine<'a> {
         left: f64,
         right: f64,
         op: fn(f64, f64) -> Value,
-    ) -> Result<()> {
+    ) {
         let result = op(left, right);
-        self.pop();
-        self.pop();
-        self.push(result)?;
-        Ok(())
+        self.pop_from_stack();
+        self.pop_from_stack();
+        self.push_to_stack(result);
     }
 
     #[inline(always)]
-    fn push(&mut self, value: Value) -> Result<()> {
-        assert!(self.stack_top < STACK_SIZE);
+    fn push_to_stack(&mut self, value: Value) {
+        assert!(self.stack_top < STACK_SIZE, "{}", self.runtime_error(&format!("Stack overflow, stack size = {}, index = {}", STACK_SIZE, self.stack_top)));
         self.stack[self.stack_top] = value;
         self.stack_top += 1;
-        Ok(())
     }
     #[inline(always)]
-    fn pop(&mut self) -> Value {
+    fn pop_from_stack(&mut self) -> Value {
         self.stack_top -= 1;
         assert!(self.stack_top < STACK_SIZE);
         self.stack[self.stack_top]
