@@ -24,7 +24,7 @@ use evie_memory::objects::{Value, Object, Function, GCObjectOf, Upvalue};
 use crate::runtime_memory::Values;
 
 
-const STACK_SIZE: usize = 1024;
+const STACK_SIZE: usize = 5;
 
 #[derive(Debug)]
 struct CallFrame {
@@ -148,8 +148,8 @@ impl<'a> VirtualMachine<'a> {
         self.check_arguments(main_function.as_ref(), 0)?;
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = Object::Closure(closure);
-        self.push_to_stack(Value::Object(script));
         self.push_to_call_frame(CallFrame::new(0));
+        self.push_to_stack(Value::Object(script));
         let start_time = Instant::now();
         let result = self.run();
         info!("Ran in {} us, Total bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
@@ -223,13 +223,13 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn get_value_from_stack(&self, index: usize) -> Value {
-        assert!(self.stack_top < STACK_SIZE, "{}", self.runtime_error(&format!("Stack overflow, stack size = {}, index = {}", STACK_SIZE, self.stack_top)));
+        assert!(index < STACK_SIZE, "{}", self.runtime_error(&format!("VM BUG Access out of bounds, stack size = {}, index = {}", STACK_SIZE, index)));
         self.stack[index]
     }
 
     #[inline(always)]
     fn set_stack_mut(&mut self, index: usize, v: Value) {
-        assert!(self.stack_top < STACK_SIZE, "{}", self.runtime_error(&format!("Stack overflow, stack size = {}, index = {}", STACK_SIZE, self.stack_top)));
+        assert!(index< STACK_SIZE, "{}", self.runtime_error(&format!("VM BUG: Stack overflow, stack size = {}, index = {}", STACK_SIZE, index)));
         self.stack[index] = v;
     }
 
@@ -1503,8 +1503,10 @@ mod tests {
         Ok(())
     }
 
+
     #[test]
-    fn vm_stack_overflow() -> Result<()> {
+    #[should_panic]
+    fn vm_stack_overflow()  {
         let mut buf = vec![];
         let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
         let source = r#"
@@ -1529,7 +1531,6 @@ mod tests {
                 assert_eq!(expected, utf8_to_string(&buf))
             }
         }
-        Ok(())
     }
 
     #[test]
