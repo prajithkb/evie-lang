@@ -265,19 +265,19 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut current_chunk  = self.current_chunk();
-        let mut current_chunk_ref = current_chunk.as_ref();
+        let mut chunk_obj  = self.current_chunk();
+        let mut chunk = chunk_obj.as_ref();
         let mut current_ip = &mut 0;
         self.set_ip_for_run_method(&mut current_ip);
         info!("Running VM, {} Bytes allocated by by compiler", self.allocator.bytes_allocated());
         loop {
-            let byte = self.read_byte(current_chunk_ref, current_ip);
+            let byte = self.read_byte(chunk, current_ip);
             let instruction = Opcode::from(byte);
             #[cfg(feature ="trace_enabled")]
             if log_enabled!(Level::Trace) {
                 let mut buf = Vec::new();
                 let fun_name = self.current_function().as_ref().to_string();
-                opcodes::disassemble_instruction_with_writer(current_chunk.as_ref(), *current_ip -1, &mut buf);
+                opcodes::disassemble_instruction_with_writer(chunk, *current_ip -1, &mut buf);
                 trace!(
                     "ip: {},function {}, stack: {:?}, next instruction: {}",
                     *current_ip,
@@ -288,7 +288,7 @@ impl<'a> VirtualMachine<'a> {
             }
             match instruction {
                 Opcode::Constant => {
-                    let constant = self.read_constant(current_chunk.as_ref(), current_ip)?;
+                    let constant = self.read_constant(chunk, current_ip)?;
                     self.push_to_stack(constant);
                 }
                 Opcode::Return => {
@@ -301,8 +301,8 @@ impl<'a> VirtualMachine<'a> {
                     self.call_frames.pop();
                     self.ip = self.call_frame().non_null_ptr();
                     self.set_ip_for_run_method(&mut current_ip);
-                    current_chunk = self.current_chunk();
-                    current_chunk_ref = current_chunk.as_ref();
+                    chunk_obj = self.current_chunk();
+                    chunk = chunk_obj.as_ref();
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
                     // push the return result
@@ -350,11 +350,11 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::DefineGlobal => {
                     let value = self.pop_from_stack();
-                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
+                    let name = self.read_string(chunk, current_ip)?;
                     self.runtime_values.insert(name.as_ref().clone(), value);
                 }
                 Opcode::GetGlobal => {
-                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
+                    let name = self.read_string(chunk, current_ip)?;
                     let value = self.runtime_values.get(name.as_ref());
                     if let Some(v) = value {
                         let v = *v;
@@ -364,7 +364,7 @@ impl<'a> VirtualMachine<'a> {
                     }
                 }
                 Opcode::SetGlobal => {
-                    let name = self.read_string(current_chunk.as_ref(), current_ip)?;
+                    let name = self.read_string(chunk, current_ip)?;
                     let value = self.peek_at(0);
                     let v = self.runtime_values.get_mut(name.as_ref());
                     match v {
@@ -378,53 +378,53 @@ impl<'a> VirtualMachine<'a> {
                     }
                 }
                 Opcode::GetLocal => {
-                    let index = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
+                    let index = self.read_byte(chunk, current_ip) as usize;
                     let fn_start_pointer = self.call_frame().fn_start_stack_index;
                     let v = self.get_value_from_stack(fn_start_pointer + index);
                     self.push_to_stack(v);
                 }
                 Opcode::SetLocal => {
-                    let index = self.read_byte(current_chunk.as_ref(), current_ip);
+                    let index = self.read_byte(chunk, current_ip);
                     let fn_start_pointer = self.call_frame().fn_start_stack_index;
                     self.stack[fn_start_pointer + index as usize] = self.peek_at(0);
                 }
                 Opcode::JumpIfFalse => {
-                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    let offset = self.read_short(chunk, current_ip);
                     if is_falsey(&self.peek_at(0)) {
                         *current_ip += offset as usize;
                     }
                 }
                 Opcode::Jump => {
-                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    let offset = self.read_short(chunk, current_ip);
                     *current_ip += offset as usize;
                 }
                 Opcode::JumpIfTrue => {
-                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    let offset = self.read_short(chunk, current_ip);
                     if !is_falsey(&self.peek_at(0)) {
                         *current_ip +=  offset as usize;
                     }
                 }
                 Opcode::Loop => {
-                    let offset = self.read_short(current_chunk.as_ref(), current_ip);
+                    let offset = self.read_short(chunk, current_ip);
                     *current_ip -= offset as usize;
                 }
                 Opcode::Call => {
-                    let arg_count = self.read_byte(current_chunk.as_ref(),current_ip);
+                    let arg_count = self.read_byte(chunk,current_ip);
                     self.call(arg_count)?;
-                    current_chunk = self.current_chunk();
-                    current_chunk_ref = current_chunk.as_ref();
+                    chunk_obj = self.current_chunk();
+                    chunk = chunk_obj.as_ref();
                     self.set_ip_for_run_method(&mut current_ip);
                 }
                 Opcode::Closure => {
-                    let function = self.read_function(current_chunk.as_ref(), current_ip)?;
+                    let function = self.read_function(chunk, current_ip)?;
                     let current_fn_stack_ptr = self.call_frame().fn_start_stack_index;
                     let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
                     let mut closure = Closure::new(function, upvalues);
                     match function.as_ref() {
                         Function::UserDefined(u) => {
                             for _ in 0..u.upvalue_count {
-                                let is_local = self.read_byte(current_chunk.as_ref(), current_ip) > 0;
-                                let index = self.read_byte(current_chunk.as_ref(), current_ip);
+                                let is_local = self.read_byte(chunk, current_ip) > 0;
+                                let index = self.read_byte(chunk, current_ip);
                                 if is_local {
                                     let upvalue_index_on_stack =
                                         current_fn_stack_ptr + index as usize;
@@ -446,7 +446,7 @@ impl<'a> VirtualMachine<'a> {
                     self.push_to_stack(stack_value);
                 }
                 Opcode::GetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
+                    let slot = self.read_byte(chunk, current_ip) as usize;
                     let closure = self.current_closure();
                     let value = {
                         let upvalues = closure.as_ref().upvalues.as_ref();
@@ -460,7 +460,7 @@ impl<'a> VirtualMachine<'a> {
                     self.push_to_stack(value);
                 }
                 Opcode::SetUpvalue => {
-                    let slot = self.read_byte(current_chunk.as_ref(), current_ip) as usize;
+                    let slot = self.read_byte(chunk, current_ip) as usize;
                     let value = self.peek_at(slot as usize);
                     let closure = self.current_closure();
                     let upvalues = closure.as_ref().upvalues.as_ref();
@@ -742,6 +742,7 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
+    #[inline(always)]
     fn call(&mut self, arg_count: ByteUnit) -> Result<()> {
         let arg_count = arg_count as usize;
         let value = self.peek_at(arg_count);
@@ -798,6 +799,7 @@ impl<'a> VirtualMachine<'a> {
             }
         }
 
+    #[inline(always)]
     fn call_function(
         &mut self,
         function: &Function,
@@ -829,7 +831,7 @@ impl<'a> VirtualMachine<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn check_arguments(&mut self, function: &Function, arg_count: usize) -> Result<bool> {
         match function {
             Function::UserDefined(u) => {
@@ -853,7 +855,7 @@ impl<'a> VirtualMachine<'a> {
         Ok(true)
     }
 
-    #[inline]
+    #[inline(always)]
     fn read_string(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Box<str>>> {
         let constant = self.read_constant(chunk, ip)?;
         match constant {
@@ -862,7 +864,7 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Function>> {
         let constant = self.read_constant(chunk, ip)?;
         match constant {
@@ -907,20 +909,20 @@ impl<'a> VirtualMachine<'a> {
         runtime_vm_error(line, &utf8_to_string(&error_buf))
     }
 
-    #[inline]
+    #[inline(always)]
     fn peek_at(&self, distance: usize) -> Value {
         let top = self.stack_top;
         self.get_value_from_stack(top - 1 - distance)
     }
 
-    #[inline]
+    #[inline(always)]
     fn equals(&mut self) -> Result<bool> {
         let left = self.pop_from_stack();
         let right = self.pop_from_stack();
         value_equals(left, right)
     }
 
-    #[inline]
+    #[inline(always)]
     fn binary_op(&mut self, op: fn(f64, f64) -> Value) -> Result<()> {
         let (left, right) = (self.peek_at(1), self.peek_at(0));
         let (left, right) = match (left, right) {
