@@ -24,7 +24,7 @@ use evie_memory::objects::{Value, Object, Function, GCObjectOf, Upvalue};
 use crate::runtime_memory::Values;
 
 
-const STACK_SIZE: usize = 5;
+const STACK_SIZE: usize = 1024;
 
 #[derive(Debug)]
 struct CallFrame {
