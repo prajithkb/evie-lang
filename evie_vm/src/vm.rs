@@ -189,13 +189,8 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn read_byte_at(&self, chunk: &Chunk, ip: usize) -> ByteUnit {
-        chunk.code.read_item_at(ip)
-    }
-
-    #[inline(always)]
     fn read_byte(&mut self, chunk: &Chunk, ip: &mut usize) -> ByteUnit{
-        let v = self.read_byte_at(chunk, *ip);
+        let v =  chunk.code.read_item_at(*ip);
         *ip += 1;
         v
     }
@@ -315,7 +310,7 @@ impl<'a> VirtualMachine<'a> {
                     self.push_to_stack(Value::Boolean(is_falsey(&v)))
                 }
                 Opcode::BangEqual => {
-                    let v = self.equals()?;
+                    let v = self.equals();
                     self.push_to_stack(Value::Boolean(!v))
                 }
                 Opcode::Greater => self.binary_op(|a, b| Value::Boolean(a > b))?,
@@ -323,7 +318,7 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Less => self.binary_op(|a, b| Value::Boolean(a < b))?,
                 Opcode::LessEqual => self.binary_op(|a, b| Value::Boolean(a <= b))?,
                 Opcode::EqualEqual => {
-                    let v = self.equals()?;
+                    let v = self.equals();
                     self.push_to_stack(Value::Boolean(v))
                 }
                 Opcode::Print => {
@@ -776,7 +771,7 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn equals(&mut self) -> Result<bool> {
+    fn equals(&mut self) -> bool {
         let left = self.pop_from_stack();
         let right = self.pop_from_stack();
         value_equals(left, right)
@@ -871,15 +866,15 @@ fn num_equals(l: f64, r: f64) -> bool {
     (l - r).abs() < EPSILON
 }
 #[inline(always)]
-fn value_equals(l: Value, r: Value) -> Result<bool> {
+fn value_equals(l: Value, r: Value) -> bool {
     match (l, r) {
-        (Value::Boolean(l), Value::Boolean(r)) => Ok(l == r),
-        (Value::Nil, Value::Nil) => Ok(true),
-        (Value::Number(l), Value::Number(r)) => Ok(num_equals(l, r)),
+        (Value::Boolean(l), Value::Boolean(r)) => l == r,
+        (Value::Nil, Value::Nil) => true,
+        (Value::Number(l), Value::Number(r)) => num_equals(l, r),
         (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-            Ok(std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r)
+            std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
         },
-        _ => Ok(false),
+        _ => false,
     }
 }
 

@@ -1,4 +1,6 @@
 pub mod equality;
+pub mod fib;
+pub mod string_equality;
 #[cfg(test)]
 #[ctor::ctor]
 fn init() {
