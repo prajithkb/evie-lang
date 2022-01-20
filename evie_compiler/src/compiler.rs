@@ -1,7 +1,6 @@
 use std::{
     collections::{linked_list::IterMut, HashMap, LinkedList},
     iter::Rev,
-    panic,
 };
 
 use evie_common::{bail, errors::*, ByteUnit, Writer};
@@ -15,7 +14,7 @@ use std::io::stdout;
 
 use evie_memory::{
     chunk::Chunk,
-    objects::{Function, GCObjectOf, Object, UserDefinedFunction, Value},
+    objects::{GCObjectOf, Object, UserDefinedFunction, Value},
     ObjectAllocator,
 };
 use num_enum::{FromPrimitive, IntoPrimitive};
@@ -147,14 +146,18 @@ pub enum FunctionType {
 
 #[derive(Debug)]
 struct State<'a> {
-    function: GCObjectOf<Function>,
+    function: GCObjectOf<UserDefinedFunction>,
     scope: Scope<'a>,
     function_type: FunctionType,
     upvalues: Vec<Upvalue>,
 }
 
 impl<'a> State<'a> {
-    fn new(function: GCObjectOf<Function>, scope: Scope<'a>, function_type: FunctionType) -> Self {
+    fn new(
+        function: GCObjectOf<UserDefinedFunction>,
+        scope: Scope<'a>,
+        function_type: FunctionType,
+    ) -> Self {
         State {
             function,
             scope,
@@ -197,12 +200,12 @@ impl<'a> Compiler<'a> {
         custom_writer: Option<Writer<'a>>,
         allocater: &'a ObjectAllocator,
     ) -> Self {
-        let script_fn = allocater.alloc(Function::UserDefined(UserDefinedFunction::new(
+        let script_fn = allocater.alloc(UserDefinedFunction::new(
             None,
             allocater.alloc(Chunk::new()),
             0,
             0,
-        )));
+        ));
         let mut c = Compiler {
             tokens,
             token_index: 0,
@@ -369,7 +372,7 @@ impl<'a> Compiler<'a> {
         ]
     }
 
-    pub fn compile(mut self) -> Result<GCObjectOf<Function>> {
+    pub fn compile(mut self) -> Result<GCObjectOf<UserDefinedFunction>> {
         while !self.is_at_end() {
             self.declaration()?;
         }
@@ -432,15 +435,13 @@ impl<'a> Compiler<'a> {
 
     fn start_new_function(&mut self, function_type: FunctionType) -> Result<()> {
         let new_function_name = self.function_name(function_type)?;
-        let new_function_name = self.new_shared_string(&new_function_name);
-        let new_function = self
-            .allocater
-            .alloc(Function::UserDefined(UserDefinedFunction::new(
-                Some(new_function_name),
-                self.allocater.alloc(Chunk::new()),
-                0,
-                0,
-            )));
+        let new_function_name = self.boxed_string(&new_function_name);
+        let new_function = self.allocater.alloc(UserDefinedFunction::new(
+            Some(new_function_name),
+            self.allocater.alloc(Chunk::new()),
+            0,
+            0,
+        ));
         let mut new_scope = Scope::new();
         if function_type != FunctionType::Function {
             new_scope.locals.push(Local::new("this", Some(0)));
@@ -473,10 +474,8 @@ impl<'a> Compiler<'a> {
         self.begin_scope();
         self.consume_next_token(TokenType::LeftParen, "Expect '(' after function name")?;
         while self.current().token_type != TokenType::RightParen {
-            match self.state.function.as_mut() {
-                Function::UserDefined(u) => u.arity += 1,
-                Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
-            }
+            let mut f = self.state.function;
+            f.arity += 1;
             let constant = self.parse_variable("Expect parameter name")?;
             self.define_variable(constant);
             if self.current().token_type == TokenType::Comma {
@@ -491,8 +490,8 @@ impl<'a> Compiler<'a> {
         self.emit_return_and_log();
         let state = self.end_new_function();
         let up_values = &state.upvalues;
-        let closure = Value::Object(Object::Function(state.function));
-        let index = self.add_constant(closure);
+        let function = Value::Object(Object::Function(state.function));
+        let index = self.add_constant(function);
         self.emit_opcode_and_bytes(Opcode::Closure, index);
         for u in up_values {
             self.emit_byte(if u.is_local { 1 } else { 0 });
@@ -593,22 +592,18 @@ impl<'a> Compiler<'a> {
     }
 
     fn add_upvalue(index: ByteUnit, state: &mut State, is_local: bool) -> ByteUnit {
-        match state.function.as_mut() {
-            Function::UserDefined(u) => {
-                if let Some((i, _)) = state
-                    .upvalues
-                    .iter()
-                    .enumerate()
-                    .find(|(_, v)| v.is_local == is_local && v.index == index)
-                {
-                    return i as ByteUnit;
-                }
-                state.upvalues.push(Upvalue::new(index, is_local));
-                u.upvalue_count += 1;
-                (u.upvalue_count - 1) as ByteUnit
-            }
-            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
+        let mut u = state.function;
+        if let Some((i, _)) = state
+            .upvalues
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.is_local == is_local && v.index == index)
+        {
+            return i as ByteUnit;
         }
+        state.upvalues.push(Upvalue::new(index, is_local));
+        u.upvalue_count += 1;
+        (u.upvalue_count - 1) as ByteUnit
     }
 
     fn resolve_local_with_state(name: &Token, state: &State) -> Result<Option<ByteUnit>> {
@@ -816,7 +811,7 @@ impl<'a> Compiler<'a> {
 
     fn string(&mut self, _can_assign: bool) -> Result<()> {
         if let Some(Literal::String(s)) = &self.previous().literal {
-            let value = Value::Object(Object::String(self.new_shared_string(s)));
+            let value = Value::Object(Object::String(self.boxed_string(s)));
             self.emit_constant(value);
             Ok(())
         } else {
@@ -935,7 +930,7 @@ impl<'a> Compiler<'a> {
     }
 
     #[inline]
-    fn new_shared_string(&mut self, name: &str) -> GCObjectOf<Box<str>> {
+    fn boxed_string(&mut self, name: &str) -> GCObjectOf<Box<str>> {
         if let Some(s) = self.strings.get(name) {
             *s
         } else {
@@ -1069,7 +1064,7 @@ impl<'a> Compiler<'a> {
     fn identifier_constant(&mut self, mut token: Token) -> Result<ByteUnit> {
         let literal = token.literal.take();
         if let Literal::Identifier(s) = literal.expect("Expect string") {
-            let name = Value::Object(Object::String(self.new_shared_string(&s)));
+            let name = Value::Object(Object::String(self.boxed_string(&s)));
             Ok(self.add_constant(name))
         } else {
             bail!(parse_error(&token, "Expect identifier"))
@@ -1098,18 +1093,12 @@ impl<'a> Compiler<'a> {
 
     #[inline]
     fn current_chunk_mut(&mut self) -> &mut Chunk {
-        match self.state.function.as_mut() {
-            Function::UserDefined(u) => u.chunk.as_mut(),
-            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
-        }
+        &mut self.state.function.chunk
     }
 
     #[inline]
     fn current_chunk(&self) -> &Chunk {
-        match self.state.function.as_ref() {
-            Function::UserDefined(u) => u.chunk.as_ref(),
-            Function::Native(_) => panic!("Compiler BUG: Cannot have Native function"),
-        }
+        &self.state.function.chunk
     }
 
     fn consume_next_token(
@@ -1199,8 +1188,6 @@ mod tests {
     use evie_common::errors::*;
     use evie_common::utf8_to_string;
     use evie_frontend::scanner::Scanner;
-    use evie_memory::objects::Function::Native;
-    use evie_memory::objects::Function::UserDefined;
     use evie_memory::objects::*;
     use evie_memory::ObjectAllocator;
 
@@ -1387,20 +1374,16 @@ mod tests {
             &allocator,
         );
         let function = compiler.compile()?;
-        match function.as_ref() {
-            UserDefined(u) => {
-                let (a, b) = match (
-                    u.chunk.as_ref().read_constant_at(0),
-                    u.chunk.as_ref().read_constant_at(3),
-                ) {
-                    (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => (l, r),
-                    _ => panic!("This should not happen"),
-                };
-                assert_eq!(a.as_ref(), b.as_ref());
-                assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()))
-            }
-            Native(_) => panic!("This should not happen"),
-        }
+        let u = &*function;
+        let (a, b) = match (
+            u.chunk.as_ref().read_constant_at(0),
+            u.chunk.as_ref().read_constant_at(3),
+        ) {
+            (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => (l, r),
+            _ => panic!("This should not happen"),
+        };
+        assert_eq!(a.as_ref(), b.as_ref());
+        assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()));
         Ok(())
     }
 
@@ -1778,6 +1761,7 @@ mod tests {
             &allocator,
         );
         let _ = compiler.compile()?;
+        println!("{}", &utf8_to_string(&buf));
         assert_eq!(
             r#"== <fn inner> ==
 0000 0008 OpCode[GetUpvalue]                0

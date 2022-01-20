@@ -60,7 +60,9 @@ pub enum Object {
     /// Strings
     String(GCObjectOf<Box<str>>),
     /// Functions
-    Function(GCObjectOf<Function>),
+    Function(GCObjectOf<UserDefinedFunction>),
+    /// Native Functions (File access socket access etc.)
+    NativeFunction(GCObjectOf<NativeFunction>),
     /// A Closure
     Closure(GCObjectOf<Closure>),
     /// A Class
@@ -74,15 +76,16 @@ pub enum Object {
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Object::String(s) => f.write_str(&s.as_ref().to_string()),
-            Object::Function(fun) => f.write_str(&fun.as_ref().to_string()),
-            Object::Closure(c) => f.write_str(&c.as_ref().to_string()),
-            Object::Class(c) => f.write_str(&c.as_ref().to_string()),
-            Object::Instance(i) => f.write_str(&i.as_ref().to_string()),
+            Object::String(s) => f.write_str(&s.to_string()),
+            Object::Function(fun) => f.write_str(&fun.to_string()),
+            Object::Closure(c) => f.write_str(&c.to_string()),
+            Object::Class(c) => f.write_str(&c.to_string()),
+            Object::Instance(i) => f.write_str(&i.to_string()),
             Object::BoundMethod(i, c) => f.write_str(&format!(
                 "[{} bound to instance of {}]",
                 *c.function, *i.class.name
             )),
+            Object::NativeFunction(u) => f.write_str(&u.to_string()),
         }
     }
 }
@@ -94,7 +97,8 @@ impl std::hash::Hash for GCObjectOf<Box<str>> {
 
 impl PartialEq for GCObjectOf<Box<str>> {
     fn eq(&self, other: &Self) -> bool {
-        unsafe { self.reference.as_ref() == other.reference.as_ref() }
+        self.reference == other.reference
+            || unsafe { self.reference.as_ref() == other.reference.as_ref() }
     }
 }
 
@@ -103,7 +107,7 @@ impl Eq for GCObjectOf<Box<str>> {}
 /// Closure Object for Evie
 #[derive(Debug, Clone, Copy, new)]
 pub struct Closure {
-    pub function: GCObjectOf<Function>,
+    pub function: GCObjectOf<UserDefinedFunction>,
     /// This is the magic that makes a closure work
     pub upvalues: GCObjectOf<Vec<GCObjectOf<Upvalue>>>,
 }

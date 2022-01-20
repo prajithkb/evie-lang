@@ -19,8 +19,8 @@ use evie_frontend::scanner::Scanner;
 use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::{ObjectAllocator};
 use evie_memory::chunk::Chunk;
-use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance};
-use evie_memory::objects::{Value, Object, Function, GCObjectOf, Upvalue};
+use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance, UserDefinedFunction};
+use evie_memory::objects::{Value, Object, GCObjectOf, Upvalue};
 
 use crate::runtime_memory::Values;
 
@@ -56,8 +56,8 @@ impl CallFrame {
 pub fn define_native_fn(name: &str, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
     let box_str =name.to_string().into_boxed_str();
     let name = vm.allocator.alloc(box_str.clone());
-    let native_function = vm.allocator.alloc(Function::Native(NativeFunction::new(name, arity, native_fn)));
-    vm.runtime_values.insert(box_str, Value::Object(Object::Function(native_function)));
+    let native_function = vm.allocator.alloc(NativeFunction::new(name, arity, native_fn));
+    vm.runtime_values.insert(box_str, Value::Object(Object::NativeFunction(native_function)));
 }
 
 #[derive(Default)]
@@ -148,7 +148,7 @@ impl<'a> VirtualMachine<'a> {
         let main_function = compiler.compile()?;
         let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
         info!("Compiled in {} us", start_time.elapsed().as_micros());
-        self.check_arguments(&main_function, 0)?;
+        self.check_arguments("", 0, 0)?;
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = Object::Closure(closure);
         self.push_to_call_frame(CallFrame::new(0, closure));
@@ -209,15 +209,11 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn current_chunk(&self) -> GCObjectOf<Chunk> {
-        let function = *self.current_function();
-        match function {
-            Function::UserDefined(u) => u.chunk,
-            Function::Native(_) => panic!("{}", self.runtime_error("VM BUG: Native function cannot have a chunk")),
-        }
+        self.current_function().chunk
     }
 
     #[inline(always)]
-    fn current_function(&self) -> GCObjectOf<Function> {
+    fn current_function(&self) -> GCObjectOf<UserDefinedFunction> {
          self.current_closure().function
     }
 
@@ -410,26 +406,21 @@ impl<'a> VirtualMachine<'a> {
                     let current_fn_stack_ptr = self.call_frame().fn_start_stack_index;
                     let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
                     let mut closure = Closure::new(function, upvalues);
-                    match function.as_ref() {
-                        Function::UserDefined(u) => {
-                            for _ in 0..u.upvalue_count {
-                                let is_local = self.read_byte(chunk, current_ip) > 0;
-                                let index = self.read_byte(chunk, current_ip);
-                                if is_local {
-                                    let upvalue_index_on_stack =
-                                        current_fn_stack_ptr + index as usize;
-                                    let captured_upvalue =
-                                        self.capture_upvalue(upvalue_index_on_stack);
-                                    let upvalues = closure.upvalues.as_mut();
-                                    upvalues.push(captured_upvalue);
-                                } else {
-                                    let current_closure = self.current_closure();
-                                    let upvalue = current_closure.upvalues[index as usize];
-                                    closure.upvalues.as_mut().push(upvalue);
-                                }
-                            }
+                    for _ in 0..function.upvalue_count {
+                        let is_local = self.read_byte(chunk, current_ip) > 0;
+                        let index = self.read_byte(chunk, current_ip);
+                        if is_local {
+                            let upvalue_index_on_stack =
+                                current_fn_stack_ptr + index as usize;
+                            let captured_upvalue =
+                                self.capture_upvalue(upvalue_index_on_stack);
+                            let upvalues = closure.upvalues.as_mut();
+                            upvalues.push(captured_upvalue);
+                        } else {
+                            let current_closure = self.current_closure();
+                            let upvalue = current_closure.upvalues[index as usize];
+                            closure.upvalues.as_mut().push(upvalue);
                         }
-                        Function::Native(_) => panic!("{}", self.runtime_error("VM BUG: Cannot have Native function")),
                     }
                     let object = self.allocator.alloc(closure);
                     let stack_value = Value::Object(Object::Closure(object));
@@ -644,7 +635,7 @@ impl<'a> VirtualMachine<'a> {
         let start_index = self.stack_top - 1 - arg_count;
         match value {
             Value::Object(Object::Closure(c)) => {
-                    self.check_arguments(&c.function, arg_count)?;
+                    self.check_arguments(&c.function.name.unwrap(), c.function.arity,arg_count)?;
                     self.push_closure_to_call_frame(c, start_index)
                 }
                 Value::Object(Object::Class(class)) => {
@@ -654,35 +645,37 @@ impl<'a> VirtualMachine<'a> {
                     let receiver = Value::Object(Object::Instance(instance));
                     // TODO preallocate this;
                     let init = self.allocator.alloc("init".to_string().into_boxed_str());
-                    if let Some(initializer) = methods.get(&init) {
-                        self.check_arguments(&initializer.function, arg_count)?;
+                    if let Some(init) = methods.get(&init) {
+                        self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
                         // set the receiver at start index for the constructor;
                         self.set_stack_mut(
                             start_index,
                             receiver
                         );
-                        self.push_closure_to_call_frame(*initializer, start_index)?;
+                        self.push_closure_to_call_frame(*init, start_index)?;
                     } else {
                         if arg_count != 0 {
                             bail!(self
-                                .runtime_error(&format!("Expected 0  arguments but got {}", arg_count)))
+                                .runtime_error(&format!("Expected 0 arguments but got {} for {} constructor", arg_count, *class.name)))
                         }
                         self.set_stack_mut(start_index, receiver);
                     }
                     Ok(())
                 },
-                Value::Object(Object::Function(f)) => {
-                    if let Function::Native(n) = *f {
-                        self.check_arguments(&f, arg_count)?;
-                        self.call_native_function(&n, arg_count, start_index)?;
-                        Ok(())
-                    } else {
-                        panic!("{}", self.runtime_error(&format!(
-                            "VM BUG: Can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
-                            value, 
-                            self.stack_top - 1 - arg_count
-                        )))
-                    }
+                Value::Object(Object::BoundMethod(_, closure)) => {
+                    self.check_arguments(&closure.function.name.unwrap(), closure.function.arity, arg_count)?;
+                    // set the receiver at start index for the constructor;
+                    self.set_stack_mut(
+                        start_index,
+                        value
+                    );
+                    self.push_closure_to_call_frame(closure, start_index)?;
+                    Ok(())
+                }
+                Value::Object(Object::NativeFunction(f)) => {
+                    self.check_arguments(&f.name, f.arity, arg_count)?;
+                    self.call_native_function(&f, arg_count, start_index)?;
+                    Ok(())
                 }
                 _ => bail!(self.runtime_error(&format!(
                     "can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
@@ -719,26 +712,12 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn check_arguments(&mut self, function: &Function, arg_count: usize) -> Result<()> {
-        match function {
-            Function::UserDefined(u) => {
-                let arity = u.arity;
-                if arity != arg_count {
-                    bail!(self.runtime_error(&format!(
-                        "Expected {} arguments but got {}",
-                        arity, arg_count
-                    )))
-                }
-            },
-            Function::Native(n) => {
-                let arity = n.arity;
-                if arity != arg_count {
-                    bail!(self.runtime_error(&format!(
-                        "Expected {} arguments but got {}",
-                        arity, arg_count
-                    )))
-                }
-            }
+    fn check_arguments(&mut self, name: &str, arity: usize, arg_count: usize) -> Result<()> {
+        if arity != arg_count {
+            bail!(self.runtime_error(&format!(
+                "Expected {} arguments but got {} for <fn {}>",
+                arity, arg_count, name
+            )))
         }
         Ok(())
     }
@@ -753,7 +732,7 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Function>> {
+    fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<UserDefinedFunction>> {
         let constant = self.read_constant(chunk, ip)?;
         match constant {
             Value::Object(Object::Function(s)) => Ok(s),
@@ -768,15 +747,10 @@ impl<'a> VirtualMachine<'a> {
         for frame in all_call_frames {
             let function = *frame.closure.function;
             let fun_name = &function.to_string();
-            match function {
-                Function::UserDefined(u) => {
-                    let ip = frame.ip;
-                    let line_num = u.chunk.lines[ip];
-                    writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
-                        .expect("Write failed")
-                }
-                Function::Native(_) => panic!("VM BUG: Cannot have native function in call frame"),
-            }
+            let ip = frame.ip;
+            let line_num = function.chunk.lines[ip];
+            writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
+                .expect("Write failed")
         }
         if self.stack_top < STACK_SIZE {
             // We print stack only if it is not stack overflow
@@ -1104,7 +1078,7 @@ mod tests {
             }
         }
         assert_eq!(
-            r#"[Runtime Error] Line: 5, message: Expected 0 arguments but got 2
+            r#"[Runtime Error] Line: 5, message: Expected 0 arguments but got 2 for <fn c>
 [line 5] in <fn c>
 [line 3] in <fn b>
 [line 2] in <fn a>
@@ -1262,6 +1236,27 @@ mod tests {
     }
 
     #[test]
+    fn vm_bound_methods() -> Result<()> {
+        let mut buf = vec![];
+        let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
+        let source = r#"
+        class Scone {
+            topping(first, second) {
+              print "scone with " + first + " and " + second;
+            }
+          }
+          
+          var scone = Scone();
+          var topping = scone.topping;
+          topping("berries", "cream");
+
+        "#;
+        vm.interpret(source.to_string(), None)?;
+        assert_eq!("scone with berries and cream\n", utf8_to_string(&buf));
+        Ok(())
+    }
+
+    #[test]
     fn vm_class_initializer_and_this() -> Result<()> {
         let mut buf = vec![];
         let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
@@ -1362,7 +1357,7 @@ mod tests {
         match vm.interpret(source.to_string(), None) {
             Err(e) => {
                 print_error(e, &mut buf);
-                assert_eq!("[Runtime Error] Line: 9, message: Expected 2 arguments but got 1\n[line 9] in <fn script>\n\n", utf8_to_string(&buf))
+                assert_eq!("[Runtime Error] Line: 9, message: Expected 2 arguments but got 1 for <fn init>\n[line 9] in <fn script>\n\n", utf8_to_string(&buf))
             }
             Ok(_) => panic!("This test is expected to fail"),
         }
