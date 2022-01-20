@@ -79,9 +79,14 @@ pub fn constant_instruction(
     chunk: &Chunk,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     let constant = chunk.code.read_item_at(offset + 1);
-    write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    if pretty {
+        write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    } else {
+        write!(writer, "{} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    }
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("Write failed");
     offset + 2
@@ -92,9 +97,14 @@ pub fn byte_instruction(
     chunk: &Chunk,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     let slot = chunk.code.read_item_at(offset + 1);
-    writeln!(writer, "{:<30} {:4}", instruction.to_string(), slot).expect("Write failed");
+    if pretty {
+        writeln!(writer, "{:<30} {:4}", instruction.to_string(), slot).expect("Write failed");
+    } else {
+        writeln!(writer, "{} {:4}", instruction.to_string(), slot).expect("Write failed");
+    }
     offset + 2
 }
 
@@ -104,17 +114,30 @@ pub fn jump_instruction(
     sign: i32,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     let mut jump = as_u16(chunk.code.read_item_at(offset + 1)) << 8;
     jump |= as_u16(chunk.code.read_item_at(offset + 2));
-    writeln!(
-        writer,
-        "{:<30} {:4} -> {}",
-        instruction.to_string(),
-        offset,
-        (offset as i32) + 3 + (jump as i32) * sign
-    )
-    .expect("Write failed");
+    if pretty {
+        writeln!(
+            writer,
+            "{:<30} {:4} -> {}",
+            instruction.to_string(),
+            offset,
+            (offset as i32) + 3 + (jump as i32) * sign
+        )
+        .expect("Write failed");
+    } else {
+        writeln!(
+            writer,
+            "{} {:4} -> {}",
+            instruction.to_string(),
+            offset,
+            (offset as i32) + 3 + (jump as i32) * sign
+        )
+        .expect("Write failed");
+    }
+
     offset + 3
 }
 
@@ -126,11 +149,16 @@ pub fn print_value(value: Value, writer: &mut dyn Write) {
     write!(writer, "{}", value).expect("Write failed");
 }
 
-pub fn disassemble_chunk_with_writer(chunk: &Chunk, name: &str, writer: &mut dyn Write) {
+pub fn disassemble_chunk_with_writer(
+    chunk: &Chunk,
+    name: &str,
+    writer: &mut dyn Write,
+    pretty: bool,
+) {
     writeln!(writer, "== {} ==", name).expect("Write failed");
     let mut offset = 0;
     while offset < chunk.code.item_count() {
-        offset = disassemble_instruction_with_writer(chunk, offset, writer);
+        offset = disassemble_instruction_with_writer(chunk, offset, writer, pretty);
     }
 }
 
@@ -138,6 +166,7 @@ pub fn disassemble_instruction_with_writer(
     chunk: &Chunk,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     write!(writer, "{:04} ", offset).expect("Write failed");
     if offset > 0 && chunk.lines[offset - 1] == chunk.lines[offset] {
@@ -146,18 +175,34 @@ pub fn disassemble_instruction_with_writer(
         write!(writer, "{:04} ", chunk.lines[offset]).expect("Write failed");
     }
     let byte = chunk.code.read_item_at(offset);
-    disassemble_instruction(byte, chunk, offset, writer)
+    disassemble_instruction(byte, chunk, offset, writer, pretty)
 }
+
+pub fn disassemble_instruction_with_writer_with_out_line_num(
+    chunk: &Chunk,
+    offset: usize,
+    writer: &mut dyn Write,
+    pretty: bool,
+) -> usize {
+    let byte = chunk.code.read_item_at(offset);
+    disassemble_instruction(byte, chunk, offset, writer, pretty)
+}
+
 pub fn closure_instruction(
     instruction: &Opcode,
     chunk: &Chunk,
     mut offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     offset += 1;
     let constant = chunk.code.read_item_at(offset);
     offset += 1;
-    write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    if pretty {
+        write!(writer, "{:<30} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    } else {
+        write!(writer, "{} {:4} '", instruction.to_string(), constant).expect("Write failed");
+    }
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("write failed");
     let v = chunk.constants.read_item_at(constant as usize);
@@ -169,15 +214,17 @@ pub fn closure_instruction(
                 offset += 1;
                 let index = chunk.code.read_item_at(offset);
                 offset += 1;
-                writeln!(
-                    writer,
-                    "{:04}    |{:>38}{} {}",
-                    offset - 2,
-                    "",
-                    if is_local == 1 { "local" } else { "upvalue" },
-                    index
-                )
-                .expect("Write failed");
+                if pretty {
+                    writeln!(
+                        writer,
+                        "{:04}    |{:>38}{} {}",
+                        offset - 2,
+                        "",
+                        if is_local == 1 { "local" } else { "upvalue" },
+                        index
+                    )
+                    .expect("Write failed");
+                }
             }
         }
     }
@@ -189,18 +236,29 @@ pub fn invoke_instruction(
     chunk: &Chunk,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     let constant = chunk.code.read_item_at(offset + 1);
     let arg_count = chunk.code.read_item_at(offset + 2);
-
-    write!(
-        writer,
-        "{:<30}   ({} args){:4} '",
-        instruction.to_string(),
-        arg_count,
-        constant
-    )
-    .expect("Write failed");
+    if pretty {
+        write!(
+            writer,
+            "{:<30}   ({} args){:4} '",
+            instruction.to_string(),
+            arg_count,
+            constant
+        )
+        .expect("Write failed");
+    } else {
+        write!(
+            writer,
+            "{} ({} args){:4} '",
+            instruction.to_string(),
+            arg_count,
+            constant
+        )
+        .expect("Write failed");
+    }
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("Write failed");
     offset + 3
@@ -211,13 +269,14 @@ pub fn disassemble_instruction(
     chunk: &Chunk,
     offset: usize,
     writer: &mut dyn Write,
+    pretty: bool,
 ) -> usize {
     match Opcode::try_from(byte) {
         Ok(instruction) => match instruction {
-            Opcode::Constant => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::SetLocal => byte_instruction(&instruction, chunk, offset, writer),
-            Opcode::Jump => jump_instruction(&instruction, chunk, 1, offset, writer),
-            Opcode::Loop => jump_instruction(&instruction, chunk, -1, offset, writer),
+            Opcode::Constant => constant_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::SetLocal => byte_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::Jump => jump_instruction(&instruction, chunk, 1, offset, writer, pretty),
+            Opcode::Loop => jump_instruction(&instruction, chunk, -1, offset, writer, pretty),
             Opcode::Return => simple_instruction(&instruction, offset, writer),
             Opcode::Add => simple_instruction(&instruction, offset, writer),
             Opcode::Subtract => simple_instruction(&instruction, offset, writer),
@@ -236,22 +295,28 @@ pub fn disassemble_instruction(
             Opcode::LessEqual => simple_instruction(&instruction, offset, writer),
             Opcode::Print => simple_instruction(&instruction, offset, writer),
             Opcode::Pop => simple_instruction(&instruction, offset, writer),
-            Opcode::Closure => closure_instruction(&instruction, chunk, offset, writer),
+            Opcode::Closure => closure_instruction(&instruction, chunk, offset, writer, pretty),
             Opcode::CloseUpvalue => simple_instruction(&instruction, offset, writer),
-            Opcode::DefineGlobal => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::GetGlobal => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::SetGlobal => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::GetLocal => byte_instruction(&instruction, chunk, offset, writer),
-            Opcode::Call => byte_instruction(&instruction, chunk, offset, writer),
-            Opcode::GetUpvalue => byte_instruction(&instruction, chunk, offset, writer),
-            Opcode::SetUpvalue => byte_instruction(&instruction, chunk, offset, writer),
-            Opcode::JumpIfFalse => jump_instruction(&instruction, chunk, 1, offset, writer),
-            Opcode::JumpIfTrue => jump_instruction(&instruction, chunk, 1, offset, writer),
-            Opcode::Class => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::SetProperty => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::GetProperty => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::Method => constant_instruction(&instruction, chunk, offset, writer),
-            Opcode::Invoke => invoke_instruction(&instruction, chunk, offset, writer),
+            Opcode::DefineGlobal => {
+                constant_instruction(&instruction, chunk, offset, writer, pretty)
+            }
+            Opcode::GetGlobal => constant_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::SetGlobal => constant_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::GetLocal => byte_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::Call => byte_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::GetUpvalue => byte_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::SetUpvalue => byte_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::JumpIfFalse => jump_instruction(&instruction, chunk, 1, offset, writer, pretty),
+            Opcode::JumpIfTrue => jump_instruction(&instruction, chunk, 1, offset, writer, pretty),
+            Opcode::Class => constant_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::SetProperty => {
+                constant_instruction(&instruction, chunk, offset, writer, pretty)
+            }
+            Opcode::GetProperty => {
+                constant_instruction(&instruction, chunk, offset, writer, pretty)
+            }
+            Opcode::Method => constant_instruction(&instruction, chunk, offset, writer, pretty),
+            Opcode::Invoke => invoke_instruction(&instruction, chunk, offset, writer, pretty),
         },
         Err(e) => {
             eprintln!(
@@ -296,7 +361,7 @@ mod tests {
 
         chunk.write_chunk(Opcode::Return.into(), 123);
         let mut buf = vec![];
-        disassemble_chunk_with_writer(&chunk, "test", &mut buf);
+        disassemble_chunk_with_writer(&chunk, "test", &mut buf, true);
         assert_eq!(
             r#"== test ==
 0000 0123 OpCode[Constant]                  0 '1.2'

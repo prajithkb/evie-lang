@@ -1,8 +1,9 @@
-use std::collections::LinkedList;
+use std::collections::{LinkedList, HashMap};
 use std::f64::EPSILON;
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
 use std::ops::Range;
+use std::panic;
 use std::ptr::NonNull;
 use std::time::{Instant};
 use evie_common::{errors::*, info, ByteUnit, bail,  utf8_to_string, error};
@@ -16,9 +17,9 @@ use evie_common::Writer;
 use evie_compiler::compiler::Compiler;
 use evie_frontend::scanner::Scanner;
 use evie_instructions::opcodes::{self, Opcode};
-use evie_memory::ObjectAllocator;
+use evie_memory::{ObjectAllocator};
 use evie_memory::chunk::Chunk;
-use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn};
+use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance};
 use evie_memory::objects::{Value, Object, Function, GCObjectOf, Upvalue};
 
 use crate::runtime_memory::Values;
@@ -29,13 +30,15 @@ const STACK_SIZE: usize = 1024;
 #[derive(Debug)]
 struct CallFrame {
     fn_start_stack_index: usize,
+    closure: GCObjectOf<Closure>,
     ip: usize,
 }
 
 impl CallFrame {
-    fn new(fn_start_stack_index: usize) -> Self {
+    fn new(fn_start_stack_index: usize, closure: GCObjectOf<Closure>) -> Self {
         CallFrame {
             fn_start_stack_index,
+            closure,
             ip: 0,
         }
     }
@@ -145,10 +148,10 @@ impl<'a> VirtualMachine<'a> {
         let main_function = compiler.compile()?;
         let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
         info!("Compiled in {} us", start_time.elapsed().as_micros());
-        self.check_arguments(main_function.as_ref(), 0)?;
+        self.check_arguments(&main_function, 0)?;
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = Object::Closure(closure);
-        self.push_to_call_frame(CallFrame::new(0));
+        self.push_to_call_frame(CallFrame::new(0, closure));
         self.push_to_stack(Value::Object(script));
         let start_time = Instant::now();
         let result = self.run();
@@ -206,19 +209,22 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn current_chunk(&self) -> GCObjectOf<Chunk> {
-        let function = self.current_function();
-        match function.as_ref() {
+        let function = *self.current_function();
+        match function {
             Function::UserDefined(u) => u.chunk,
             Function::Native(_) => panic!("{}", self.runtime_error("VM BUG: Native function cannot have a chunk")),
         }
     }
 
     #[inline(always)]
-    fn current_closure(&self) -> GCObjectOf<Closure> {
-        let index = self.call_frame().fn_start_stack_index;
-        self.closure_from_stack(index)
+    fn current_function(&self) -> GCObjectOf<Function> {
+         self.current_closure().function
     }
 
+    #[inline(always)]
+    fn current_closure(&self) -> GCObjectOf<Closure> {
+        self.call_frame().closure
+    }
 
 
     #[inline(always)]
@@ -231,22 +237,6 @@ impl<'a> VirtualMachine<'a> {
     fn set_stack_mut(&mut self, index: usize, v: Value) {
         assert!(index< STACK_SIZE, "{}", self.runtime_error(&format!("VM BUG: Stack overflow, stack size = {}, index = {}", STACK_SIZE, index)));
         self.stack[index] = v;
-    }
-
-    #[inline(always)]
-    fn closure_from_stack(&self, index: usize) -> GCObjectOf<Closure> {
-        let v = self.get_value_from_stack(index);
-        match v {
-            Value::Object(Object::Closure(c)) =>  c,
-            _ =>  panic!("{}", self.runtime_error(&format!("VM BUG: Expected closure at stack index: {} but got ({})",
-            index, v,)))
-        }
-    }
-
-    #[inline(always)]
-    fn current_function(&self) -> GCObjectOf<Function> {
-        let v = self.current_closure();
-       v.as_ref().function
     }
 
     #[inline(always)]
@@ -266,7 +256,7 @@ impl<'a> VirtualMachine<'a> {
 
     fn run(&mut self) -> Result<()> {
         let mut chunk_obj  = self.current_chunk();
-        let mut chunk = chunk_obj.as_ref();
+        let mut chunk = &chunk_obj;
         let mut current_ip = &mut 0;
         self.set_ip_for_run_method(&mut current_ip);
         info!("Running VM, {} Bytes allocated by by compiler", self.allocator.bytes_allocated());
@@ -277,13 +267,13 @@ impl<'a> VirtualMachine<'a> {
             if log_enabled!(Level::Trace) {
                 let mut buf = Vec::new();
                 let fun_name = self.current_function().as_ref().to_string();
-                opcodes::disassemble_instruction_with_writer(chunk, *current_ip -1, &mut buf);
+                opcodes::disassemble_instruction_with_writer_with_out_line_num(chunk, *current_ip -1, &mut buf, false);
                 trace!(
-                    "ip: {},function {}, stack: {:?}, next instruction: {}",
+                    "ip: {},function {}, stack: {:?}, next instruction: [{}]",
                     *current_ip,
                     fun_name,
                     self.sanitized_stack(0..self.stack_top, false),
-                    utf8_to_string(&buf).replace(" ",".").trim(),   
+                    &utf8_to_string(&buf).trim()
                 );
             }
             match instruction {
@@ -302,7 +292,7 @@ impl<'a> VirtualMachine<'a> {
                     self.ip = self.call_frame().non_null_ptr();
                     self.set_ip_for_run_method(&mut current_ip);
                     chunk_obj = self.current_chunk();
-                    chunk = chunk_obj.as_ref();
+                    chunk = &chunk_obj;
                     // drop all the local values for the last function
                     self.stack_top = fn_starting_pointer;
                     // push the return result
@@ -409,10 +399,10 @@ impl<'a> VirtualMachine<'a> {
                     *current_ip -= offset as usize;
                 }
                 Opcode::Call => {
-                    let arg_count = self.read_byte(chunk,current_ip);
-                    self.call(arg_count)?;
+                    let arg_count = self.read_byte(chunk,current_ip) as usize;
+                    self.call_value(arg_count, self.peek_at(arg_count))?;
                     chunk_obj = self.current_chunk();
-                    chunk = chunk_obj.as_ref();
+                    chunk = &chunk_obj;
                     self.set_ip_for_run_method(&mut current_ip);
                 }
                 Opcode::Closure => {
@@ -434,7 +424,7 @@ impl<'a> VirtualMachine<'a> {
                                     upvalues.push(captured_upvalue);
                                 } else {
                                     let current_closure = self.current_closure();
-                                    let upvalue = current_closure.as_ref().upvalues.as_ref()[index as usize];
+                                    let upvalue = current_closure.upvalues[index as usize];
                                     closure.upvalues.as_mut().push(upvalue);
                                 }
                             }
@@ -449,12 +439,12 @@ impl<'a> VirtualMachine<'a> {
                     let slot = self.read_byte(chunk, current_ip) as usize;
                     let closure = self.current_closure();
                     let value = {
-                        let upvalues = closure.as_ref().upvalues.as_ref();
+                        let upvalues = closure.upvalues;
                         assert!(slot < upvalues.len(), "{}", self.runtime_error("VM BUG: Invalid up value index"));
                         let upvalue = upvalues[slot];
-                        match upvalue.as_ref().location {
+                        match upvalue.location {
                             Location::Stack(index) => self.get_value_from_stack(index),
-                            Location::Heap(shared_value) => *shared_value.as_ref(),
+                            Location::Heap(shared_value) => *shared_value,
                         }
                     };
                     self.push_to_stack(value);
@@ -463,7 +453,7 @@ impl<'a> VirtualMachine<'a> {
                     let slot = self.read_byte(chunk, current_ip) as usize;
                     let value = self.peek_at(slot as usize);
                     let closure = self.current_closure();
-                    let upvalues = closure.as_ref().upvalues.as_ref();
+                    let upvalues = closure.upvalues;
                     assert!(slot < upvalues.len(), "{}", self.runtime_error("VM BUG: Invalid up value index"));
                     let mut upvalue = upvalues[slot];
                     let location = &mut upvalue.as_mut().location;
@@ -482,202 +472,108 @@ impl<'a> VirtualMachine<'a> {
                     self.pop_from_stack();
                 }
                 Opcode::Class => {
-                    // let class = self.read_string(current_chunk, ip)?;
-                    // let object_ptr = self.allocate_object(Object::Class(Rc::new(Class::new(class))));
-                    // let v = Value::Object(ObjectPtr::new(object_ptr));
-                    // self.push(v)?
+                    let class = self.read_string(chunk, current_ip)?;
+                    let methods= self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, GCObjectOf<Closure>>::new());
+                    let class_obj = self.allocator.alloc(Class::new(class, methods));
+                    let value = Value::Object(Object::Class(class_obj));
+                    self.push_to_stack(value);
                 }
                 Opcode::SetProperty => {
-                    // let property = self.read_string(current_chunk, ip)?;
-                    // let value = self.peek_at(0)?;
-                    // let instance = self.peek_at(1)?;
-                    // self.set_property(&instance, property, value)?;
-                    // let value = self.pop();
-                    // self.pop();
-                    // self.push(value)?;
+                    let property = self.read_string(chunk, current_ip)?;
+                    let value = self.peek_at(0);
+                    let mut instance = self.peek_at(1);
+                    if let Value::Object(Object::Instance(i)) = &mut instance {
+                        self.set_property(i, property, value)?;
+                        let value = self.pop_from_stack();
+                        self.pop_from_stack();
+                        // a.b = '2' evaluates to '2'
+                        self.push_to_stack(value);
+                    } else {
+                        bail!(self.runtime_error(&format!("Only instances can have properties got {} instead", instance)))
+                    }
                 }
                 Opcode::GetProperty => {
-                    // let property = self.read_str(current_chunk, ip)?;
-                    // let instance = self.peek_at(0)?;
-                    // let (value, method) = self.get_property(&instance, property)?;
-                    // if let Some(method) = method {
-                    //     self.bind_method(value, method)?;
-                    // } else {
-                    //     self.pop(); // instance
-                    //     self.push(value)?;
-                    // }
+                    let property = self.read_string(chunk, current_ip)?;
+                    let instance = self.peek_at(0);
+                    if let Value::Object(Object::Instance(i)) = instance {
+                        let v = self.get_property(i, property)?;
+                        self.pop_from_stack();
+                        self.push_to_stack(v);
+                    } else {
+                        bail!(self.runtime_error(&format!("Only instances can have properties got {} instead", instance)))
+                    }
+                    
                 }
                 Opcode::Method => {
-                    // let method_name = self.read_string(current_chunk, ip)?;
-                    // self.define_method(method_name)?;
+                    let method_name = self.read_string(chunk, current_ip)?;
+                    self.define_method(method_name)?;
                 }
                 Opcode::Invoke => {
-                //     let method = self.read_str(current_chunk, ip)?;
-                //     let arg_count = self.read_byte(current_chunk, ip)? as usize;
-                //     let receiver = self.peek_at(arg_count)?;
-                //     let fn_start_stack_index = self.stack_top - arg_count - 1;
-                //     match receiver {
-                //         Value::Object(o) => match o.object_ref() {
-                //             Object::Receiver(v, _) => {
-                //                 let v = &**v;
-                //                 match v {
-                //                     Value::Object(o) => match o.object_ref() {
-                //                         Object::Instance(instance) => {
-                //                             let class = instance.class.clone();
-                //                             let (method, receiver) =
-                //                                 self.get_method_and_receiver(class, &receiver, method)?;
-                //                             self.set_stack_mut(fn_start_stack_index, receiver)?;
-                //                             self.call_function(
-                //                                 &method.function,
-                //                                 arg_count,
-                //                                 fn_start_stack_index,
-                //                             )?;
-                //                         }
-                //                         _ => bail!(self.runtime_error("Only instance can have methods")),
-                //                     }
-                //                     _ => bail!(self.runtime_error("Only instance can have methods")),
-                //                 }
-                //             }
-                //             Object::Instance(instance) => {
-                //                 let class = instance.class.clone();
-                //                 let (method, receiver) =
-                //                     self.get_method_and_receiver(class, &receiver, method)?;
-                //                 self.set_stack_mut(fn_start_stack_index, receiver)?;
-                //                 self.call_function(&method.function, arg_count, fn_start_stack_index)?;
-                //             }
-                //             _ => bail!(self.runtime_error("Only instance can have methods"))
-                //         }
-                //         _ => bail!(self.runtime_error("Only instance can have methods"))
-                //     };
-                //     current_function = self.current_closure()?.function.clone();
-                //     current_chunk = VirtualMachine::chunk(&current_function)?;
-                //     let ip_ptr = &mut self.call_frame_mut().ip as *mut usize;
-                //     self.set_ip_ptr(ip_ptr);
-                //     *ip = self.ip();
+                    let method = self.read_string(chunk, current_ip)?;
+                    let arg_count = self.read_byte(chunk, current_ip) as usize;
+                    let receiver = self.peek_at(arg_count);
+                    let fn_start_stack_index = self.stack_top - arg_count - 1;
+                    self.invoke(receiver, method, fn_start_stack_index)?;
+                    chunk_obj = self.current_chunk();
+                    chunk = &chunk_obj;
+                    self.set_ip_for_run_method(&mut current_ip);
                 }
             };
         }
     }
-    // fn get_method_and_receiver(
-    //     &mut self,
-    //     class: Rc<Class>,
-    //     receiver: &Value,
-    //     method: &SharedString,
-    // ) -> Result<(Rc<Closure>, Value)> {
-    //     let method = self.get_method(class, method)?;
-    //     let receiver = match receiver {
-    //         Value::Object(o) => match o.object_ref() {
-    //             Object::Receiver(r, _) => {
-    //                Value::Object(ObjectPtr::new(self.allocate_object(Object::Receiver(r.clone(), method.clone()))))
-    //             }
-    //         _ => {
-    //             let object = Object::Receiver(Rc::new(*receiver), method.clone());
-    //             Value::Object(ObjectPtr::new(self.allocate_object(object)))
-    //         },
-    //         }
-    //         _ => {
-    //             let object = self.allocate_object(Object::Receiver(Rc::new(*receiver), method.clone()));
-    //             Value::Object(ObjectPtr::new(object))
-    //         }
-    //     };
-    //     Ok((method, receiver))
-    // }
 
-    // fn set_property(&self, instance: &Value, property: SharedString, value: Value) -> Result<()> {
-    //     match instance {
-    //         Value::Object(o) => {
-    //             match o.object_ref() {
-    //                 Object::Instance(instance) => {
-    //                     let mut fields_mut = (*instance.fields).borrow_mut();
-    //                     fields_mut.insert(property, value);
-    //                 },
-    //                 Object::Receiver(instance, _) => {
-    //                     let instance = &**instance;
-    //                     self.set_property(instance, property, value)?;
-    //                 },
-    //                 _ => bail!(self.runtime_error("Only instances have properties")),
-    //             }
-    //         },
-    //         _ => bail!(self.runtime_error("Only instances have properties")),
-           
-    //     }
-    //     Ok(())
-    // }
+    fn invoke(&mut self, receiver: Value, method: GCObjectOf<Box<str>>, fn_start_stack_index: usize) -> Result<()> {
+        if let Value::Object(Object::Instance(i)) = receiver {
+            if let Some(closure) = i.class.methods.get(&method) {
+                self.set_stack_mut(fn_start_stack_index, receiver);
+                self.push_closure_to_call_frame(*closure, fn_start_stack_index)?;
+                return Ok(())
+            }
+        }
+        bail!(self.runtime_error(&format!("Undefined method '{}'", *method)))
+    }
 
-    // fn get_property(
-    //     &self,
-    //     instance: &Value,
-    //     property: &SharedString,
-    // ) -> Result<(Value, Option<Rc<Closure>>)> {
-    //     match instance {
-    //         Value::Object(o) => {
-    //             match o.object_ref() {
-    //                 Object::Instance(instance) => {
-    //                     let fields = (*instance.fields).borrow();
-    //                     println!("{:?}", fields);
-    //                     if let Some(v) = fields.get(property) {
-    //                         let v = *v;
-    //                         drop(fields);
-    //                         Ok((v, None))
-    //                     } else {
-    //                         drop(fields);
-    //                         let class = instance.class.clone();
-    //                         let method = self.get_method(class, property)?;
-    //                         let receiver = self.peek_at(0)?; // receiver
-    //                         Ok((receiver, Some(method)))
-    //                     }
-    //                 },
-    //                 Object::Receiver(instance, _) => self.get_property(instance, property),
-    //                 _ => bail!(self.runtime_error("Only instances have properties")),
-    //             }
-    //         },
-    //         _ => bail!(self.runtime_error("Only instances have properties")),
-    //     }
-    // }
+    fn set_property(&mut self, instance: &mut Instance, property: GCObjectOf<Box<str>>, value: Value) -> Result<()> {
+        let fields = instance.fields.as_mut();
+        fields.insert(property, value);
+        Ok(())
+    }
 
-    // fn get_method(&self, class: Rc<Class>, name: &SharedString) -> Result<Rc<Closure>> {
-    //     let method = (*class.methods).borrow();
-    //     if let Some(c) = method.get(name) {
-    //         Ok(c.clone())
-    //     } else {
-    //         bail!(self.runtime_error(&format!("Undefined property {}", name)))
-    //     }
-    // }
+    fn get_property(
+        &mut self,
+        instance: GCObjectOf<Instance>,
+        property: GCObjectOf<Box<str>>,
+    )  -> Result<Value>{
+        if let Some(v) =instance.fields.get(&property) {
+            Ok(*v)
+        } else if let Some(&method) = instance.class.methods.get(&property){
+                Ok(self.bind_method(instance, method))
+        } else {
+            bail!(self.runtime_error(&format!("No property or method with the name {}", *property)))
+        }
+    }
 
-    // fn bind_method(&mut self, receiver: Value, method: Rc<Closure>) -> Result<()> {
-    //     let method_with_receiver = match receiver {
-    //         Value::Object(o) => match o.object_ref() {
-    //             Object::Receiver(r, _) => Value::Object(ObjectPtr::new(self.allocate_object(Object::Receiver(r.clone(), method)))),
-    //             _ => Value::Object(ObjectPtr::new(self.allocate_object(Object::Receiver(Rc::new(receiver), method)))),
-    //         },
-    //         _ => Value::Object(ObjectPtr::new(self.allocate_object(Object::Receiver(Rc::new(receiver), method))))
-    //     };
-    //     self.pop(); // remove the instance
-    //     self.push(method_with_receiver)?;
-    //     Ok(())
-    // }
+    fn bind_method(&mut self, instance: GCObjectOf<Instance>, method: GCObjectOf<Closure>) -> Value{
+        self.pop_from_stack();
+        Value::Object(Object::BoundMethod(instance, method))
+    }
 
-    // fn define_method(&mut self, method_name: SharedString) -> Result<()> {
-    //     let method = self.peek_at(0)?;
-    //     match method  {
-    //         Value::Object(o) => match o.object_ref() {
-    //             Object::Closure(closure) => match self.peek_at(1)? {
-    //                 Value::Object(o) => match o.object_ref() {
-    //                     Object::Class(c) => {
-    //                         let mut methods = (*c.methods).borrow_mut();
-    //                         methods.insert(method_name, closure.clone());
-    //                     }
-    //                     _ => bail!(self.runtime_error("VM BUG: Unreachable code")),
-    //                 }
-    //                 _ => bail!(self.runtime_error("VM BUG: Unreachable code")),
-    //             },
-    //             _ => bail!(self.runtime_error("VM BUG: Unreachable code")),
-    //         }
-    //        _ => bail!(self.runtime_error("VM BUG: Unreachable code")),
-    //     };
-    //     self.pop(); //method closure
-    //     Ok(())
-    // }
+    fn define_method(&mut self, method_name: GCObjectOf<Box<str>>) -> Result<()> {
+        let value = self.peek_at(0);
+        let method = if let Value::Object(Object::Closure(c)) = value {
+            c
+        } else {
+            panic!("{}", self.runtime_error(&format!("VM BUG: expected a closure but got {}", value)));
+        };
+        if let Value::Object(Object::Class(c)) = self.peek_at(1) {
+            let mut methods = c.methods;
+            methods.insert(method_name, method);
+        } else {
+            bail!(self.runtime_error("Only classes can have methods"))
+        }
+        self.pop_from_stack(); //method closure
+        Ok(())
+    }
 
     fn sanitized_stack(&self, range: Range<usize>, with_address: bool) -> Vec<String> {
         let s: Vec<String> = self.stack[range]
@@ -698,14 +594,14 @@ impl<'a> VirtualMachine<'a> {
         let upvalue_iter = self.up_values.iter().rev();
         let mut count = 0;
         upvalue_iter
-            .take_while(|u| match u.as_ref().location {
+            .take_while(|u| match u.location {
                 Location::Stack(index) => index >= last_index,
                 _ => false,
             })
             .for_each(|u| {
                 count += 1;
                 let mut u = *u;
-                let location = u.as_ref().location;
+                let location = u.location;
                 if let Location::Stack(index) = location {
                     let stack_value = self.get_value_from_stack(index);
                     // Moving from stack to heap
@@ -722,13 +618,13 @@ impl<'a> VirtualMachine<'a> {
         let upvalue_iter = self.up_values.iter().rev();
         let upvalue = upvalue_iter
             .take_while(|&&u| {
-                match u.as_ref().location {
+                match u.location {
                     Location::Stack(index) => index >= stack_index,
                     _ => false,
                 }
             })
             .find(|&&u| {
-                match u.as_ref().location {
+                match u.location {
                     Location::Stack(index) => index == stack_index,
                     _ => false,
                 }
@@ -743,53 +639,50 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn call(&mut self, arg_count: ByteUnit) -> Result<()> {
+    fn call_value(&mut self, arg_count: usize, value: Value) -> Result<()> {
         let arg_count = arg_count as usize;
-        let value = self.peek_at(arg_count);
         let start_index = self.stack_top - 1 - arg_count;
         match value {
             Value::Object(Object::Closure(c)) => {
-                    let function = c.as_ref().function.as_ref();
-                    self.call_function(function, arg_count, start_index)
+                    self.check_arguments(&c.function, arg_count)?;
+                    self.push_closure_to_call_frame(c, start_index)
                 }
-                // Object::Class(c) => {
-                //     let class = c.clone();
-                //     let methods = c.methods.clone();
-                //     let receiver = Object::Instance(Rc::new(Instance::new(class)));
-                //     let receiver = Value::Object(ObjectPtr::new(self.allocate_object(receiver)));
-                //     let init = SharedString::from_str("init");
-                //     if let Some(initializer) = (*methods).borrow().get(&init) {
-                //         // set the receiver at start index for the constructor;
-                //         let instance = self.allocate_object(Object::Receiver(Rc::new(receiver), initializer.clone()));
-                //         let sv = Value::Object(ObjectPtr::new(instance) );
-                //         self.set_stack_mut(
-                //             start_index,
-                //            sv
-                //         )?;
-                //         self.call_function(&initializer.function, arg_count, start_index)?;
-                //     } else {
-                //         if arg_count != 0 {
-                //             bail!(self
-                //                 .runtime_error(&format!("Expected 0  arguments but got {}", arg_count)))
-                //         }
-                //         self.set_stack_mut(start_index, receiver)?;
-                //     }
-                //     Ok(())
-                // }
-                // Object::Receiver(receiver, closure) => {
-                //     let receiver = receiver.clone();
-                //     let closure = closure.clone();
-                //     let receiver  = self.allocate_object(Object::Receiver(receiver, closure.clone()));
-                //     let sv = Value::Object(ObjectPtr::new(receiver));
-                //     self.set_stack_mut(
-                //         start_index,
-                //         sv,
-                //     )?;
-                //     self.call_function(&closure.function, arg_count, start_index)
-                // }
-                Value::Object(Object::Function(f))=> {
-                    let f = f.as_ref();
-                    self.call_function(f, arg_count, start_index)
+                Value::Object(Object::Class(class)) => {
+                    let methods = class.methods;
+                    let fields = self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, Value>::new());
+                    let instance = self.allocator.alloc(Instance::new(class, fields));
+                    let receiver = Value::Object(Object::Instance(instance));
+                    // TODO preallocate this;
+                    let init = self.allocator.alloc("init".to_string().into_boxed_str());
+                    if let Some(initializer) = methods.get(&init) {
+                        self.check_arguments(&initializer.function, arg_count)?;
+                        // set the receiver at start index for the constructor;
+                        self.set_stack_mut(
+                            start_index,
+                            receiver
+                        );
+                        self.push_closure_to_call_frame(*initializer, start_index)?;
+                    } else {
+                        if arg_count != 0 {
+                            bail!(self
+                                .runtime_error(&format!("Expected 0  arguments but got {}", arg_count)))
+                        }
+                        self.set_stack_mut(start_index, receiver);
+                    }
+                    Ok(())
+                },
+                Value::Object(Object::Function(f)) => {
+                    if let Function::Native(n) = *f {
+                        self.check_arguments(&f, arg_count)?;
+                        self.call_native_function(&n, arg_count, start_index)?;
+                        Ok(())
+                    } else {
+                        panic!("{}", self.runtime_error(&format!(
+                            "VM BUG: Can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
+                            value, 
+                            self.stack_top - 1 - arg_count
+                        )))
+                    }
                 }
                 _ => bail!(self.runtime_error(&format!(
                     "can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
@@ -800,18 +693,12 @@ impl<'a> VirtualMachine<'a> {
         }
 
     #[inline(always)]
-    fn call_function(
+    fn push_closure_to_call_frame(
         &mut self,
-        function: &Function,
-        arg_count: usize,
+        closure: GCObjectOf<Closure>,
         fn_start_stack_index: usize,
     ) -> Result<()> {
-        self.check_arguments(function, arg_count)?;
-        if let Function::Native(n) = function {
-            self.call_native_function(n, arg_count, fn_start_stack_index)?;
-        } else {
-            self.push_to_call_frame(CallFrame::new(fn_start_stack_index));
-        }
+        self.push_to_call_frame(CallFrame::new(fn_start_stack_index, closure));
         Ok(())
     }
 
@@ -832,7 +719,7 @@ impl<'a> VirtualMachine<'a> {
     }
 
     #[inline(always)]
-    fn check_arguments(&mut self, function: &Function, arg_count: usize) -> Result<bool> {
+    fn check_arguments(&mut self, function: &Function, arg_count: usize) -> Result<()> {
         match function {
             Function::UserDefined(u) => {
                 let arity = u.arity;
@@ -842,17 +729,18 @@ impl<'a> VirtualMachine<'a> {
                         arity, arg_count
                     )))
                 }
-            }
-            Function::Native(_n) => {
-                // let arity = n.arity;
-                // if arity != arg_count {
-                //     bail!(self.runtime_error(&format!(
-                //         "Expected {} arguments but got {}",
-                //         arity, arg_count
-                //     )))
+            },
+            Function::Native(n) => {
+                let arity = n.arity;
+                if arity != arg_count {
+                    bail!(self.runtime_error(&format!(
+                        "Expected {} arguments but got {}",
+                        arity, arg_count
+                    )))
                 }
             }
-        Ok(true)
+        }
+        Ok(())
     }
 
     #[inline(always)]
@@ -878,14 +766,12 @@ impl<'a> VirtualMachine<'a> {
         writeln!(error_buf, "{}", message).expect("Write failed");
         let all_call_frames = (&self.call_frames).iter().rev();
         for frame in all_call_frames {
-            let stack_index = frame.fn_start_stack_index;
-            let closure = self.closure_from_stack(stack_index);
-            let function = closure.as_ref().function.as_ref();
+            let function = *frame.closure.function;
             let fun_name = &function.to_string();
             match function {
                 Function::UserDefined(u) => {
                     let ip = frame.ip;
-                    let line_num = u.chunk.as_ref().lines[ip];
+                    let line_num = u.chunk.lines[ip];
                     writeln!(error_buf, "[line {}] in {}", line_num, fun_name)
                         .expect("Write failed")
                 }
@@ -895,17 +781,17 @@ impl<'a> VirtualMachine<'a> {
         if self.stack_top < STACK_SIZE {
             // We print stack only if it is not stack overflow
             error!(
-                "Current function= {}, ip ={}, stack ={:?}",
+                "Error at function= {}, ip ={}, stack ={:?}",
                 &self
                     .current_function()
-                    .as_ref()
+                    
                     .to_string(),
                 self.ip(),
                 self.sanitized_stack(0..self.stack_top, false)
             );
         }
         let chunk = self.current_chunk();
-        let line = chunk.as_ref().lines[self.ip()];
+        let line = chunk.lines[self.ip()];
         runtime_vm_error(line, &utf8_to_string(&error_buf))
     }
 
@@ -937,8 +823,8 @@ impl<'a> VirtualMachine<'a> {
         match (self.peek_at(1), self.peek_at(0)) {
             (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
                 let mut concatenated_string = String::new();
-                        concatenated_string.push_str(l.as_ref());
-                        concatenated_string.push_str(r.as_ref());
+                        concatenated_string.push_str(&l);
+                        concatenated_string.push_str(&r);
                         self.pop_from_stack();
                         self.pop_from_stack();
                         let allocated_string = self.allocator.alloc(concatenated_string.into_boxed_str());
@@ -1017,7 +903,7 @@ fn value_equals(l: Value, r: Value) -> Result<bool> {
         (Value::Nil, Value::Nil) => Ok(true),
         (Value::Number(l), Value::Number(r)) => Ok(num_equals(l, r)),
         (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-            Ok(std::ptr::eq(l.as_ptr(), r.as_ptr()) || l.as_ref() == r.as_ref())
+            Ok(std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r)
         },
         _ => Ok(false),
     }
@@ -1217,7 +1103,6 @@ mod tests {
                 print_error(e, &mut buf);
             }
         }
-        println!("{}", utf8_to_string(&buf));
         assert_eq!(
             r#"[Runtime Error] Line: 5, message: Expected 0 arguments but got 2
 [line 5] in <fn c>

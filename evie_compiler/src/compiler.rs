@@ -996,12 +996,17 @@ impl<'a> Compiler<'a> {
             if self.custom_writer.is_some() {
                 let mut writer_opt = self.custom_writer.take();
                 let writer = writer_opt.as_deref_mut().expect("Writer expected");
-                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer);
+                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer, true);
                 self.custom_writer = writer_opt;
             }
             #[cfg(feature = "trace_enabled")]
             if log_enabled!(Level::Info) {
-                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, &mut stdout());
+                opcodes::disassemble_chunk_with_writer(
+                    self.current_chunk(),
+                    &name,
+                    &mut stdout(),
+                    true,
+                );
             }
         }
     }
