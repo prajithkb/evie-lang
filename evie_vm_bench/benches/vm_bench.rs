@@ -37,6 +37,8 @@ pub fn recursion(c: &mut Criterion) {
         Iteration(25, evie_vm_bench::fib::src).build(),
         Iteration(30, evie_vm_bench::fib::src).build(),
         Iteration(35, evie_vm_bench::fib::src).build(),
+        Iteration(36, evie_vm_bench::fib::src).build(),
+        Iteration(37, evie_vm_bench::fib::src).build(),
     ]
     .into_iter()
     {
