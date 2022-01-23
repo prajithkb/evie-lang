@@ -2,6 +2,7 @@ use evie_common::ByteUnit;
 
 use crate::objects::Value;
 
+///  Chunk in evie holds the byte code & constants. Created by the Compiler.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub code: Memory<ByteUnit>,

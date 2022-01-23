@@ -1,3 +1,4 @@
+//! Stores the runtime values of objects (used for storing global variables)
 use std::collections::HashMap;
 
 use evie_memory::objects::Value;

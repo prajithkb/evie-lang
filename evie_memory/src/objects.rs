@@ -1,23 +1,16 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fmt::Display,
     ops::{Deref, DerefMut},
     ptr::NonNull,
-    rc::Rc,
 };
 
 use derive_new::new;
 use evie_common::Writer;
 
-use crate::chunk::Chunk;
+use crate::{chunk::Chunk, ObjectAllocator};
 
-pub type Shared<T> = Rc<RefCell<T>>;
-pub fn shared<T>(v: T) -> Shared<T> {
-    Rc::new(RefCell::new(v))
-}
-
-/// A runtime 'Value' in Evie. This is only data structure exposed to the runtime.
+/// A runtime 'Value' in Evie. This is the only data structure exposed to the runtime.
 /// It is a combination of primitives such as 'Boolean' and complex data structures like 'Object'
 /// See [Object] for more about objects.
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +22,7 @@ pub enum Value {
     /// Numbers are represented as [f64]
     Number(f64),
     /// See [Object] for more about objects.
-    Object(Object),
+    Object(GCObjectOf<Object>),
 }
 
 impl Display for Value {
@@ -55,8 +48,35 @@ pub fn print_value(value: &Value, writer: Writer) {
 
 /// Objects are heap allocated and are garbage collected.
 /// See [super::ObjectAllocator] for more details how to `alloc` and `free` objects
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub enum Object {
+pub struct Object {
+    /// The [Tag] that helps with GC (mark and sweep algorithm)
+    pub gc_tag: Tag,
+    /// The [ObjectType] embedded in this Object
+    pub object_type: ObjectType,
+}
+
+impl Object {
+    pub fn new_gc_object(object_type: ObjectType, allocator: &ObjectAllocator) -> GCObjectOf<Self> {
+        allocator.alloc(Object {
+            gc_tag: Tag::default(),
+            object_type,
+        })
+    }
+}
+
+impl Display for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.object_type.to_string())
+    }
+}
+
+/// Objects are heap allocated and are garbage collected.
+/// See [super::ObjectAllocator] for more details how to `alloc` and `free` objects
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub enum ObjectType {
     /// Strings
     String(GCObjectOf<Box<str>>),
     /// Functions
@@ -70,22 +90,23 @@ pub enum Object {
     /// An Instance
     Instance(GCObjectOf<Instance>),
     /// A Bound Method with an instance as a receiver
-    BoundMethod(GCObjectOf<Instance>, GCObjectOf<Closure>),
+    BoundMethod(GCObjectOf<BoundMethod>),
 }
 
-impl Display for Object {
+impl Display for ObjectType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Object::String(s) => f.write_str(&s.to_string()),
-            Object::Function(fun) => f.write_str(&fun.to_string()),
-            Object::Closure(c) => f.write_str(&c.to_string()),
-            Object::Class(c) => f.write_str(&c.to_string()),
-            Object::Instance(i) => f.write_str(&i.to_string()),
-            Object::BoundMethod(i, c) => f.write_str(&format!(
+            ObjectType::String(s) => f.write_str(&s.to_string()),
+            ObjectType::Function(fun) => f.write_str(&fun.to_string()),
+            ObjectType::Closure(c) => f.write_str(&c.to_string()),
+            ObjectType::Class(c) => f.write_str(&c.to_string()),
+            ObjectType::Instance(i) => f.write_str(&i.to_string()),
+            ObjectType::BoundMethod(b) => f.write_str(&format!(
                 "[{} bound to instance of {}]",
-                *c.function, *i.class.name
+                *b.1.function.name.unwrap(),
+                *b.0.class.name
             )),
-            Object::NativeFunction(u) => f.write_str(&u.to_string()),
+            ObjectType::NativeFunction(u) => f.write_str(&u.to_string()),
         }
     }
 }
@@ -137,9 +158,13 @@ impl Display for Function {
 /// An User defined function
 #[derive(Debug, Clone, new, Copy)]
 pub struct UserDefinedFunction {
+    /// The name of the function. It is optional becuse the "Main" function does not have a name
     pub name: Option<GCObjectOf<Box<str>>>,
+    /// The [Chunk] that holds instructions for this function
     pub chunk: GCObjectOf<Chunk>,
+    /// The number of arguments
     pub arity: usize,
+    /// The number of upvalues to be captured for this function
     pub upvalue_count: usize,
 }
 
@@ -154,7 +179,7 @@ impl Display for UserDefinedFunction {
 }
 
 /// Native function is  basically a function pointer
-pub type NativeFn = fn(Vec<Value>) -> Value;
+pub type NativeFn = fn(Vec<Value>, allocator: &ObjectAllocator) -> Value;
 
 /// Native functions are functions implemented in Rust
 #[derive(Clone, new, Copy)]
@@ -179,9 +204,9 @@ impl Display for NativeFunction {
 }
 
 impl NativeFunction {
-    pub fn call(&self, arguments: Vec<Value>) -> Value {
+    pub fn call(&self, arguments: Vec<Value>, allocator: &ObjectAllocator) -> Value {
         let function = self.function;
-        function(arguments)
+        function(arguments, allocator)
     }
 }
 
@@ -233,6 +258,10 @@ impl Display for Instance {
     }
 }
 
+#[derive(Debug)]
+/// Struct for BoundMethod
+pub struct BoundMethod(pub GCObjectOf<Instance>, pub GCObjectOf<Closure>);
+
 /// Captured value for a Closure (the magic that makes a Closure work)
 #[derive(Debug, Clone, Copy)]
 pub struct Upvalue {
@@ -257,18 +286,16 @@ impl Upvalue {
 /// Metadata related to an [Object]. Used mainly for GC.
 /// See
 #[derive(Default, Debug, Clone, Copy, new)]
-pub struct ObjectMetada {
+pub struct Tag {
     /// Used in GC for mark and sweep
     pub is_marked: bool,
     /// Pointer to the next object
-    pub next: Option<NonNull<ObjectMetada>>,
+    pub next: Option<NonNull<Tag>>,
 }
 
 /// A Managed Object (garbage collected) in Evie. It contains the metadata and a pointer to the actual object.
 /// This is created and destroyed using [super::ObjectAllocator]
 pub struct GCObjectOf<T> {
-    /// Metadata for this object, used for mark and sweep
-    pub metadata: NonNull<ObjectMetada>,
     /// Pointer to the heap allocated object `T`
     pub reference: NonNull<T>,
 }
@@ -276,7 +303,7 @@ pub struct GCObjectOf<T> {
 impl<T> std::fmt::Debug for GCObjectOf<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GCObjectOf")
-            .field("metadata", &self.metadata)
+            // .field("metadata", &self.metadata)
             .field("reference", &self.reference)
             .field("type", &std::any::type_name::<T>())
             .finish()
@@ -284,48 +311,19 @@ impl<T> std::fmt::Debug for GCObjectOf<T> {
 }
 
 impl<T> GCObjectOf<T> {
-    pub(crate) fn new(metadata: NonNull<ObjectMetada>, reference: NonNull<T>) -> Self {
-        GCObjectOf {
-            metadata,
-            reference,
-        }
+    pub(crate) fn new(reference: NonNull<T>) -> Self {
+        GCObjectOf { reference }
     }
 
     pub fn as_ptr(&self) -> *const T {
         self.reference.as_ptr()
-    }
-
-    /// # Safety
-    /// Caller should ensure that `orig` is a value GCObject
-    pub unsafe fn map_ref<U, F>(orig: GCObjectOf<T>, f: F) -> GCObjectOf<U>
-    where
-        F: FnOnce(&T) -> &U,
-    {
-        let ptr: *const U = f(orig.reference.as_ref()) as *const U;
-        GCObjectOf {
-            metadata: orig.metadata,
-            reference: NonNull::new(ptr as *mut U).expect("Null pointer"),
-        }
-    }
-
-    /// # Safety
-    /// Caller should ensure that `orig` is a value GCObject
-    pub unsafe fn map_mut<U, F>(mut orig: GCObjectOf<T>, f: F) -> GCObjectOf<U>
-    where
-        F: FnOnce(&mut T) -> &mut U,
-    {
-        let ptr: *mut U = f(orig.reference.as_mut());
-        GCObjectOf {
-            metadata: orig.metadata,
-            reference: NonNull::new(ptr).expect("Null pointer"),
-        }
     }
 }
 
 impl<T> Clone for GCObjectOf<T> {
     fn clone(&self) -> Self {
         Self {
-            metadata: self.metadata,
+            // metadata: self.metadata,
             reference: self.reference,
         }
     }
@@ -361,11 +359,12 @@ impl<T> Copy for GCObjectOf<T> {}
 
 #[cfg(test)]
 mod tests {
-    use crate::objects::{Object, Value};
+    use crate::objects::{GCObjectOf, Object, Value};
 
     #[test]
     fn value_size() {
-        assert_eq!(48, std::mem::size_of::<Value>());
-        assert_eq!(40, std::mem::size_of::<Object>());
+        assert_eq!(16, std::mem::size_of::<Value>());
+        assert_eq!(8, std::mem::size_of::<GCObjectOf<Object>>());
+        assert_eq!(32, std::mem::size_of::<Object>());
     }
 }

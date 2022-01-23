@@ -156,5 +156,4 @@ pub fn pretty_print(tokens: &[Token], writer: Writer) {
         )
         .expect("Failed to write");
     }
-    writeln!(writer, "============").expect("Failed to write");
 }

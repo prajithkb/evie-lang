@@ -1,3 +1,5 @@
+//! THe virtual machine crate.
+//! Implements the logic for all the instructions defined in [evie_instructions::opcodes]
 mod runtime_memory;
 pub mod vm;
 

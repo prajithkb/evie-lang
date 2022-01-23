@@ -7,8 +7,8 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let mut runner = Runner::new();
     let result = match args.len() {
-        1 => runner.run_prompt(),
-        2 => runner.run_script_with_exit_code(&args[1]),
+        1 => runner.repl(),
+        2 => runner.run_script(&args[1]),
         _ => print_help(),
     };
     match result {
@@ -19,6 +19,6 @@ fn main() -> Result<()> {
 }
 
 fn print_help() -> Result<()> {
-    eprintln!("Usage: evie [type=interpreter|vm] [script=path to a file]\nNotes: Only values for type are 'interpreter' and 'vm");
+    eprintln!("Usage: evie [path to evie script]\nNote: If you run without any arguments, you enter REPL mode");
     Ok(())
 }

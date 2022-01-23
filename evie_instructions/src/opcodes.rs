@@ -3,51 +3,88 @@ use std::{convert::TryFrom, fmt::Display, io::Write};
 use evie_common::ByteUnit;
 use evie_memory::{
     chunk::Chunk,
-    objects::{Object, Value},
+    objects::{ObjectType, Value},
 };
 
 /// The supported op codes for Evie VM.
-/// TODO: Add detailed docs for each
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 pub enum Opcode {
+    /// Any constant declared in code (String, Number, Class, Function etc)
     Constant,
+    /// Returns from a function
     Return,
+    /// Addition
     Add,
+    /// Subtraction
     Subtract,
+    /// Multiplication
     Multiply,
+    /// Division
     Divide,
+    /// Negation
     Negate,
+    /// Null value
     Nil,
+    /// Boolean `true`
     True,
+    /// Boolean `false`
     False,
+    /// Not operator
     Not,
+    /// Equality comparison
     EqualEqual,
+    /// Not equal comparison
     BangEqual,
+    /// `>`
     Greater,
+    /// `>=`
     GreaterEqual,
+    /// `<`
     Less,
+    /// `<=`
     LessEqual,
+    /// Prints the result to stdout
     Print,
+    /// Pops value from the stack
     Pop,
+    /// Defines a global variable
     DefineGlobal,
+    /// Gets the value of a global variable
     GetGlobal,
+    /// Sets the value of a global variable
     SetGlobal,
+    /// Gets the value of a local variable
     GetLocal,
+    /// Sets the value of a local variable
     SetLocal,
+    /// Conditional Jump if the evaluated condition is false
     JumpIfFalse,
+    /// Conditional Jump if the evaluated condition is true
     JumpIfTrue,
+    /// Jump
     Jump,
+    /// Infinite loop
     Loop,
+    /// Call a function
     Call,
+    /// Define a Closure
     Closure,
+    /// Gets the upvalue (see [evie_memory::objects::Closure] for more details)
     GetUpvalue,
+    /// Sets the upvalue (see [evie_memory::objects::Closure] for more details)
     SetUpvalue,
+    /// Closes the upvalue (move the value from Stack to Heap, see  [evie_memory::objects::Closure] &  [evie_memory::objects::Upvalue]  for more details)
     CloseUpvalue,
+    /// Defines a  [evie_memory::objects::Class]
     Class,
+    /// Sets the property for a Class [evie_memory::objects::Instance]
     SetProperty,
+    /// Gets the property for a Class [evie_memory::objects::Instance]
     GetProperty,
+    /// Defines a Class method
     Method,
+    /// Invokes a Class method
     Invoke,
 }
 
@@ -205,24 +242,26 @@ pub fn closure_instruction(
     }
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("write failed");
-    let v = dbg!(chunk.constants.read_item_at(constant as usize));
-    if let Value::Object(Object::Function(c)) = v {
-        let function = *c;
-        for _ in 0..function.upvalue_count {
-            let is_local = chunk.code.read_item_at(offset);
-            offset += 1;
-            let index = chunk.code.read_item_at(offset);
-            offset += 1;
-            if pretty {
-                writeln!(
-                    writer,
-                    "{:04}    |{:>38}{} {}",
-                    offset - 2,
-                    "",
-                    if is_local == 1 { "local" } else { "upvalue" },
-                    index
-                )
-                .expect("Write failed");
+    let v = chunk.constants.read_item_at(constant as usize);
+    if let Value::Object(o) = v {
+        if let ObjectType::Function(c) = o.object_type {
+            let function = *c;
+            for _ in 0..function.upvalue_count {
+                let is_local = chunk.code.read_item_at(offset);
+                offset += 1;
+                let index = chunk.code.read_item_at(offset);
+                offset += 1;
+                if pretty {
+                    writeln!(
+                        writer,
+                        "{:04}    |{:>38}{} {}",
+                        offset - 2,
+                        "",
+                        if is_local == 1 { "local" } else { "upvalue" },
+                        index
+                    )
+                    .expect("Write failed");
+                }
             }
         }
     }

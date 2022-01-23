@@ -1,11 +1,17 @@
-//! All Native functions supported by Evie
+//! All Native functions supported by Evie.
+//!
+//! Currently only supports two [clock] & [to_string]
 
 #[cfg(feature = "trace_enabled")]
 use evie_common::trace;
-use evie_memory::objects::Value;
+use evie_memory::{
+    objects::{Object, ObjectType, Value},
+    ObjectAllocator,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn clock(_: Vec<Value>) -> Value {
+/// Prints the current time as a [evie_memory::objects::Value::Number] (float)
+pub fn clock(_: Vec<Value>, _: &ObjectAllocator) -> Value {
     let start = SystemTime::now();
     let since_the_epoch = start
         .duration_since(UNIX_EPOCH)
@@ -14,4 +20,13 @@ pub fn clock(_: Vec<Value>) -> Value {
     #[cfg(feature = "trace_enabled")]
     trace!("native fn clock() -> {} ", since_the_epoch);
     Value::Number(since_the_epoch)
+}
+
+/// Converts the given [evie_memory::objects::Value]  into a [evie_memory::objects::ObjectType::String]
+pub fn to_string(inputs: Vec<Value>, allocator: &ObjectAllocator) -> Value {
+    let result = inputs[0].to_string();
+    #[cfg(feature = "trace_enabled")]
+    trace!("native fn to_string() -> {} ", result);
+    let string = ObjectType::String(allocator.alloc(result.into_boxed_str()));
+    Value::Object(Object::new_gc_object(string, allocator))
 }

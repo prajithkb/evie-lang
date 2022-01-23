@@ -1,23 +1,24 @@
+//! Common logic needed for evie. This crate also re-exports some functionalities
 #[macro_use]
 extern crate error_chain;
+/// The errors in evie
 pub mod errors {
 
     // Create the Error, ErrorKind, ResultExt, and Result types
     error_chain! {
         errors {
-            // Interpreter errors
+            /// Scan errors
             ScanError(message: String) {
                 description("Scan Error")
                 display("Scan Error: {}", message)
             }
+            /// Parse errors
             ParseError(message: String) {
                 description("Parse Error")
                 display("Parse Error: {}", message)
             }
-            ResolutionError(message: String) {
-                description("Resolution Error")
-                display("Resolution Error: {}", message)
-            }
+
+            /// Runtime errors
             RuntimeError(message: String) {
                 description("Runtime Error")
                 display("Runtime Error: {}", message)
@@ -67,9 +68,6 @@ pub fn print_error(e: Error, error_writer: &mut dyn Write) {
     match e.0 {
         ErrorKind::ScanError(i) => print_error_kind_message("[Scan Error]", &i, error_writer),
         ErrorKind::ParseError(i) => print_error_kind_message("[Parse Error]", &i, error_writer),
-        ErrorKind::ResolutionError(i) => {
-            print_error_kind_message("[Resolution Error]", &i, error_writer)
-        }
         ErrorKind::RuntimeError(i) => print_error_kind_message("[Runtime Error]", &i, error_writer),
         _ => print_error_kind_message("Unknown", &e.to_string(), error_writer),
     };

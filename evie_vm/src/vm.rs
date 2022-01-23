@@ -1,4 +1,4 @@
-use std::collections::{LinkedList, HashMap};
+use std::collections::{HashMap};
 use std::f64::EPSILON;
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
@@ -6,21 +6,17 @@ use std::ops::Range;
 use std::panic;
 use std::ptr::NonNull;
 use std::time::{Instant};
-use evie_common::{errors::*, info, ByteUnit, bail,  utf8_to_string, error};
+use evie_common::{errors::*, info, ByteUnit, bail,  utf8_to_string, error, trace};
 #[cfg(feature="trace_enabled")]
 use evie_common::{log_enabled, Level};
-#[cfg(feature="trace_enabled")]
-use evie_common::trace;
-#[cfg(feature="trace_enabled")]
-use evie_frontend::tokens::pretty_print;
 use evie_common::Writer;
 use evie_compiler::compiler::Compiler;
 use evie_frontend::scanner::Scanner;
 use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::{ObjectAllocator};
 use evie_memory::chunk::Chunk;
-use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance, UserDefinedFunction};
-use evie_memory::objects::{Value, Object, GCObjectOf, Upvalue};
+use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance, UserDefinedFunction, BoundMethod, Object};
+use evie_memory::objects::{Value, ObjectType, GCObjectOf, Upvalue};
 
 use crate::runtime_memory::Values;
 
@@ -53,29 +49,41 @@ impl CallFrame {
 
 }
 
+/// Defines the given [evie_memory::objects::NativeFn] in the given [VirtualMachine]
 pub fn define_native_fn(name: &str, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
     let box_str =name.to_string().into_boxed_str();
     let name = vm.allocator.alloc(box_str.clone());
     let native_function = vm.allocator.alloc(NativeFunction::new(name, arity, native_fn));
-    vm.runtime_values.insert(box_str, Value::Object(Object::NativeFunction(native_function)));
+    vm.runtime_values.insert(box_str, Value::Object(Object::new_gc_object(ObjectType::NativeFunction(native_function), &vm.allocator)));
 }
 
+/// Optional args for the [VirtualMachine]. 
+/// Currently unused
 #[derive(Default)]
 pub struct Args {
     _timing_per_instruction: bool,
 
 }
 
+/// The Virtual machine.
 pub struct VirtualMachine<'a> {
+    /// The call stack
     stack: [Value; STACK_SIZE],
+    /// Pointer to the top of the stack
     stack_top: usize,
+    /// Call frames (stores functions)
     call_frames: Vec<CallFrame>,
+    /// Global variables
     runtime_values: Values,
-    up_values: LinkedList<GCObjectOf<Upvalue>>,
+    /// Up values used for [evie_memory::objects::Closure]
+    up_values: Vec<GCObjectOf<Upvalue>>,
+    /// Custom [evie_common::Writer] for non stdout output
     custom_writer: Option<Writer<'a>>,
+    /// The `Object` allocator
     allocator: ObjectAllocator,
-    // unused for now
+    /// unused for now
     optional_args: Option<Args>,
+    /// Instruction pointer
     ip: NonNull<usize>
 }
 
@@ -124,7 +132,7 @@ impl<'a> VirtualMachine<'a> {
             stack_top: 0,
             call_frames: Vec::new(),
             runtime_values: Values::new(),
-            up_values: LinkedList::new(),
+            up_values: Vec::new(),
             custom_writer,
             allocator: ObjectAllocator::new(),
             optional_args: None,
@@ -132,30 +140,36 @@ impl<'a> VirtualMachine<'a> {
         }
     }
 
+    /// Interprets the given source code.
     pub fn interpret(&mut self, source: String, optional_args: Option<Args>) -> Result<()> {
+        let bytes_allocated_by_compiler = self.allocator.bytes_allocated();
         self.reset_vm();
         self.optional_args = optional_args;
         let mut scanner = Scanner::new(source);
         let start_time = Instant::now();
         let tokens = scanner.scan_tokens()?;
-        info!("Tokens created in {} us", start_time.elapsed().as_micros());
-        #[cfg(feature = "trace_enabled")]
-        if log_enabled!(Level::Trace) {
-            pretty_print(tokens, &mut stdout());
-        }
+        trace!("Tokens created in {} us", start_time.elapsed().as_micros());
         let start_time = Instant::now();
-        let compiler = Compiler::new(tokens, &self.allocator);
+        let mut compiler_buf = Vec::new();
+        let compiler = Compiler::new_with_writer(tokens, &self.allocator, Some(&mut compiler_buf));
         let main_function = compiler.compile()?;
+        #[cfg(feature = "trace_enabled")]
+        {
+            println!("{}", &utf8_to_string(&compiler_buf));
+        }
         let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
-        info!("Compiled in {} us", start_time.elapsed().as_micros());
+        trace!("Compiled in {} us", start_time.elapsed().as_micros());
         self.check_arguments("", 0, 0)?;
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
-        let script = Object::Closure(closure);
+        let script = ObjectType::Closure(closure);
         self.push_to_call_frame(CallFrame::new(0, closure));
-        self.push_to_stack(Value::Object(script));
+        self.push_to_stack(Value::Object(Object::new_gc_object(script, &self.allocator)));
         let start_time = Instant::now();
         let result = self.run();
-        info!("Ran in {} us, Total bytes allocated: {}", start_time.elapsed().as_micros(), self.allocator.bytes_allocated());
+        trace!("Ran in {} us, Bytes allocated by compiler: {}, Bytes allocated by VM ={}", 
+            start_time.elapsed().as_micros(), 
+            bytes_allocated_by_compiler, 
+            self.allocator.bytes_allocated() - bytes_allocated_by_compiler);
         result
     }
 
@@ -171,15 +185,7 @@ impl<'a> VirtualMachine<'a> {
 
     #[inline(always)]
     fn call_frame(&self) -> &CallFrame {
-        self.call_frame_peek_at(0)
-    }
-    
-    #[inline(always)]
-    fn call_frame_peek_at(&self, index: usize) -> &CallFrame {
-        let len = self.call_frames.len();
-        let index = len - 1 - index;
-        assert!(index < self.call_frames.len());
-        &self.call_frames[index]
+        self.call_frames.last().expect("VM BUG: Expected call frame")
     }
 
     #[inline(always)]
@@ -250,7 +256,7 @@ impl<'a> VirtualMachine<'a> {
         let mut chunk = &chunk_obj;
         let mut current_ip = &mut 0;
         self.set_ip_for_run_method(&mut current_ip);
-        info!("Running VM, {} Bytes allocated by by compiler", self.allocator.bytes_allocated());
+        info!("VM starting");
         loop {
             let byte = self.read_byte(chunk, current_ip);
             let instruction = Opcode::from(byte);
@@ -263,7 +269,7 @@ impl<'a> VirtualMachine<'a> {
                     "ip: {},function {}, stack: {:?}, next instruction: [{}]",
                     *current_ip,
                     fun_name,
-                    self.sanitized_stack(0..self.stack_top, false),
+                    self.sanitized_full_stack(),
                     &utf8_to_string(&buf).trim()
                 );
             }
@@ -418,7 +424,7 @@ impl<'a> VirtualMachine<'a> {
                         }
                     }
                     let object = self.allocator.alloc(closure);
-                    let stack_value = Value::Object(Object::Closure(object));
+                    let stack_value = Value::Object(Object::new_gc_object(ObjectType::Closure(object), &self.allocator));
                     self.push_to_stack(stack_value);
                 }
                 Opcode::GetUpvalue => {
@@ -461,19 +467,21 @@ impl<'a> VirtualMachine<'a> {
                     let class = self.read_string(chunk, current_ip)?;
                     let methods= self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, GCObjectOf<Closure>>::new());
                     let class_obj = self.allocator.alloc(Class::new(class, methods));
-                    let value = Value::Object(Object::Class(class_obj));
+                    let value = Value::Object(Object::new_gc_object(ObjectType::Class(class_obj), &self.allocator));
                     self.push_to_stack(value);
                 }
                 Opcode::SetProperty => {
                     let property = self.read_string(chunk, current_ip)?;
                     let value = self.peek_at(0);
                     let mut instance = self.peek_at(1);
-                    if let Value::Object(Object::Instance(i)) = &mut instance {
-                        self.set_property(i, property, value)?;
-                        let value = self.pop_from_stack();
-                        self.pop_from_stack();
-                        // a.b = '2' evaluates to '2'
-                        self.push_to_stack(value);
+                    if let Value::Object(o) = &mut instance {
+                        if let ObjectType::Instance(mut i) = &o.object_type {
+                            self.set_property(&mut i, property, value)?;
+                            let value = self.pop_from_stack();
+                            self.pop_from_stack();
+                            // a.b = '2' evaluates to '2'
+                            self.push_to_stack(value);
+                        }
                     } else {
                         bail!(self.runtime_error(&format!("Only instances can have properties got {} instead", instance)))
                     }
@@ -481,10 +489,12 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::GetProperty => {
                     let property = self.read_string(chunk, current_ip)?;
                     let instance = self.peek_at(0);
-                    if let Value::Object(Object::Instance(i)) = instance {
-                        let v = self.get_property(i, property)?;
-                        self.pop_from_stack();
-                        self.push_to_stack(v);
+                    if let Value::Object(o) = instance {
+                        if let ObjectType::Instance(i) = o.object_type {
+                            let v = self.get_property(i, property)?;
+                            self.pop_from_stack();
+                            self.push_to_stack(v);
+                        }
                     } else {
                         bail!(self.runtime_error(&format!("Only instances can have properties got {} instead", instance)))
                     }
@@ -509,11 +519,13 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn invoke(&mut self, receiver: Value, method: GCObjectOf<Box<str>>, fn_start_stack_index: usize) -> Result<()> {
-        if let Value::Object(Object::Instance(i)) = receiver {
-            if let Some(closure) = i.class.methods.get(&method) {
-                self.set_stack_mut(fn_start_stack_index, receiver);
-                self.push_closure_to_call_frame(*closure, fn_start_stack_index)?;
-                return Ok(())
+        if let Value::Object(o) = receiver {
+            if let ObjectType::Instance(i) = o.object_type {
+                if let Some(closure) = i.class.methods.get(&method) {
+                    self.set_stack_mut(fn_start_stack_index, receiver);
+                    self.push_closure_to_call_frame(*closure, fn_start_stack_index)?;
+                    return Ok(())
+                }
             }
         }
         bail!(self.runtime_error(&format!("Undefined method '{}'", *method)))
@@ -541,19 +553,26 @@ impl<'a> VirtualMachine<'a> {
 
     fn bind_method(&mut self, instance: GCObjectOf<Instance>, method: GCObjectOf<Closure>) -> Value{
         self.pop_from_stack();
-        Value::Object(Object::BoundMethod(instance, method))
+        let bound_method = self.allocator.alloc(BoundMethod(instance, method));
+        Value::Object(Object::new_gc_object(ObjectType::BoundMethod(bound_method), &self.allocator))
     }
 
     fn define_method(&mut self, method_name: GCObjectOf<Box<str>>) -> Result<()> {
         let value = self.peek_at(0);
-        let method = if let Value::Object(Object::Closure(c)) = value {
-            c
+        let method = if let Value::Object(c) = value {
+            if let ObjectType::Closure(c) = c.object_type {
+                c
+            } else {
+                panic!("{}", self.runtime_error(&format!("VM BUG: expected a closure but got {}", value)));
+            }
         } else {
             panic!("{}", self.runtime_error(&format!("VM BUG: expected a closure but got {}", value)));
         };
-        if let Value::Object(Object::Class(c)) = self.peek_at(1) {
-            let mut methods = c.methods;
-            methods.insert(method_name, method);
+        if let Value::Object(o) = self.peek_at(1) {
+            if let ObjectType::Class(c) = o.object_type {
+                let mut methods = c.methods;
+                methods.insert(method_name, method);
+            }
         } else {
             bail!(self.runtime_error("Only classes can have methods"))
         }
@@ -561,7 +580,11 @@ impl<'a> VirtualMachine<'a> {
         Ok(())
     }
 
-    fn sanitized_stack(&self, range: Range<usize>, with_address: bool) -> Vec<String> {
+    fn sanitized_full_stack(&self) -> Vec<String> {
+        self.sanitized_stack_with_range_and_address(0..self.stack_top, false)
+    }
+
+    fn sanitized_stack_with_range_and_address(&self, range: Range<usize>, with_address: bool) -> Vec<String> {
         let s: Vec<String> = self.stack[range]
             .iter()
             .enumerate()
@@ -619,7 +642,7 @@ impl<'a> VirtualMachine<'a> {
             *u
         } else {
             let created_value = self.allocator.alloc(Upvalue::new_with_location(Location::Stack(stack_index)));
-            self.up_values.push_back(created_value);
+            self.up_values.push(created_value);
             created_value
         }
     }
@@ -628,55 +651,63 @@ impl<'a> VirtualMachine<'a> {
     fn call_value(&mut self, arg_count: usize, value: Value) -> Result<()> {
         let arg_count = arg_count as usize;
         let start_index = self.stack_top - 1 - arg_count;
-        match value {
-            Value::Object(Object::Closure(c)) => {
-                    self.check_arguments(&c.function.name.unwrap(), c.function.arity,arg_count)?;
-                    self.push_closure_to_call_frame(c, start_index)
-                }
-                Value::Object(Object::Class(class)) => {
-                    let methods = class.methods;
-                    let fields = self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, Value>::new());
-                    let instance = self.allocator.alloc(Instance::new(class, fields));
-                    let receiver = Value::Object(Object::Instance(instance));
-                    // TODO preallocate this;
-                    let init = self.allocator.alloc("init".to_string().into_boxed_str());
-                    if let Some(init) = methods.get(&init) {
-                        self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
+        if let Value::Object(object) = value {
+            match object.object_type {
+                ObjectType::Closure(c) => {
+                        self.check_arguments(&c.function.name.unwrap(), c.function.arity,arg_count)?;
+                        self.push_closure_to_call_frame(c, start_index)
+                    }
+                   ObjectType::Class(class) => {
+                        let methods = class.methods;
+                        let fields = self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, Value>::new());
+                        let instance = self.allocator.alloc(Instance::new(class, fields));
+                        let receiver = Value::Object(Object::new_gc_object(ObjectType::Instance(instance), &self.allocator));
+                        // TODO preallocate this;
+                        let init = self.allocator.alloc("init".to_string().into_boxed_str());
+                        if let Some(init) = methods.get(&init) {
+                            self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
+                            // set the receiver at start index for the constructor;
+                            self.set_stack_mut(
+                                start_index,
+                                receiver
+                            );
+                            self.push_closure_to_call_frame(*init, start_index)?;
+                        } else {
+                            if arg_count != 0 {
+                                bail!(self
+                                    .runtime_error(&format!("Expected 0 arguments but got {} for {} constructor", arg_count, *class.name)))
+                            }
+                            self.set_stack_mut(start_index, receiver);
+                        }
+                        Ok(())
+                    },
+                    ObjectType::BoundMethod(b) => {
+                        let closure = b.1;
+                        self.check_arguments(&closure.function.name.unwrap(), closure.function.arity, arg_count)?;
                         // set the receiver at start index for the constructor;
                         self.set_stack_mut(
                             start_index,
-                            receiver
+                            value
                         );
-                        self.push_closure_to_call_frame(*init, start_index)?;
-                    } else {
-                        if arg_count != 0 {
-                            bail!(self
-                                .runtime_error(&format!("Expected 0 arguments but got {} for {} constructor", arg_count, *class.name)))
-                        }
-                        self.set_stack_mut(start_index, receiver);
+                        self.push_closure_to_call_frame(closure, start_index)?;
+                        Ok(())
                     }
-                    Ok(())
-                },
-                Value::Object(Object::BoundMethod(_, closure)) => {
-                    self.check_arguments(&closure.function.name.unwrap(), closure.function.arity, arg_count)?;
-                    // set the receiver at start index for the constructor;
-                    self.set_stack_mut(
-                        start_index,
-                        value
-                    );
-                    self.push_closure_to_call_frame(closure, start_index)?;
-                    Ok(())
+                    ObjectType::NativeFunction(f) => {
+                        self.check_arguments(&f.name, f.arity, arg_count)?;
+                        self.call_native_function(&f, arg_count, start_index)?;
+                        Ok(())
+                    }
+                    _ => bail!(self.runtime_error(&format!(
+                        "can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
+                        value, 
+                        start_index
+                    ))),
                 }
-                Value::Object(Object::NativeFunction(f)) => {
-                    self.check_arguments(&f.name, f.arity, arg_count)?;
-                    self.call_native_function(&f, arg_count, start_index)?;
-                    Ok(())
-                }
-                _ => bail!(self.runtime_error(&format!(
+            } else {
+                bail!(self.runtime_error(&format!(
                     "can only call a function/closure, constructor or a class method, got '{}', at stack index {}",
                     value, 
-                    self.stack_top - 1 - arg_count
-                ))),
+                    start_index)))
             }
         }
 
@@ -697,10 +728,12 @@ impl<'a> VirtualMachine<'a> {
         fn_start_stack_index: usize,
     ) -> Result<()> {
         let mut arguments = Vec::new();
-        for v in &self.stack[fn_start_stack_index..(fn_start_stack_index + arg_count)] {
+        let arg_start_index = fn_start_stack_index + 1;
+        let arg_end_index = arg_start_index + arg_count;
+        for v in &self.stack[arg_start_index..arg_end_index] {
             arguments.push(*v);
         }
-        let result = native_function.call(arguments);
+        let result = native_function.call(arguments, &self.allocator);
         self.stack_top = fn_start_stack_index + 1;
         self.set_stack_mut(fn_start_stack_index, result);
         Ok(())
@@ -721,7 +754,12 @@ impl<'a> VirtualMachine<'a> {
     fn read_string(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Box<str>>> {
         let constant = self.read_constant(chunk, ip)?;
         match constant {
-            Value::Object(Object::String(s)) => Ok(s),
+            Value::Object(o) => {
+                match o.object_type {
+                    ObjectType::String(s) => Ok(s),
+                    _ => Err(self.runtime_error("message").into()),
+                }
+            }
             _ => Err(self.runtime_error("message").into()),
         }
     }
@@ -730,7 +768,12 @@ impl<'a> VirtualMachine<'a> {
     fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<UserDefinedFunction>> {
         let constant = self.read_constant(chunk, ip)?;
         match constant {
-            Value::Object(Object::Function(s)) => Ok(s),
+            Value::Object(o) => {
+                match o.object_type {
+                    ObjectType::Function(s) => Ok(s),
+                    _ => bail!(self.runtime_error("Not a function")),
+                }
+            }   
             _ => bail!(self.runtime_error("Not a function")),
         }
     }
@@ -756,7 +799,7 @@ impl<'a> VirtualMachine<'a> {
                     
                     .to_string(),
                 self.ip(),
-                self.sanitized_stack(0..self.stack_top, false)
+                self.sanitized_full_stack()
             );
         }
         let chunk = self.current_chunk();
@@ -789,23 +832,31 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn add(&mut self) -> Result<()> {
-        match (self.peek_at(1), self.peek_at(0)) {
-            (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-                let mut concatenated_string = String::new();
-                        concatenated_string.push_str(&l);
-                        concatenated_string.push_str(&r);
-                        self.pop_from_stack();
-                        self.pop_from_stack();
-                        let allocated_string = self.allocator.alloc(concatenated_string.into_boxed_str());
-                        let sv = Value::Object(Object::String(allocated_string));
-                        self.push_to_stack(sv);
-                        Ok(())
+        let (left, right) = (self.peek_at(1), self.peek_at(0));
+        match (left, right){
+            (Value::Object(l), Value::Object(r)) => match (l.object_type,r.object_type) {
+                (ObjectType::String(l), ObjectType::String(r)) => {
+                    let mut concatenated_string = String::new();
+                            concatenated_string.push_str(&l);
+                            concatenated_string.push_str(&r);
+                            self.pop_from_stack();
+                            self.pop_from_stack();
+                            let allocated_string = self.allocator.alloc(concatenated_string.into_boxed_str());
+                            let sv = Value::Object(Object::new_gc_object(ObjectType::String(allocated_string), &self.allocator));
+                            self.push_to_stack(sv);
+                            Ok(())
+                }
+                _ => bail!(self.runtime_error(&format!(
+                    "Add can be perfomed only on numbers or strings, got '{}' and '{}'",
+                    left,
+                    right,
+                ))),
             }
             (Value::Number(_), Value::Number(_)) => self.binary_op(|a, b| Value::Number(a + b)),
             _ => bail!(self.runtime_error(&format!(
-                "Add can be perfomed only on numbers or strings, got {} and {}",
-                self.peek_at(1),
-                self.peek_at(0)
+                "Add can be perfomed only on numbers or strings, got '{}' and '{}'",
+                left,
+                right,
             ))),
         }
     }
@@ -871,8 +922,13 @@ fn value_equals(l: Value, r: Value) -> bool {
         (Value::Boolean(l), Value::Boolean(r)) => l == r,
         (Value::Nil, Value::Nil) => true,
         (Value::Number(l), Value::Number(r)) => num_equals(l, r),
-        (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-            std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
+        (Value::Object(l), Value::Object(r)) => {
+             match (l.object_type,r.object_type) {
+                 (ObjectType::String(l), ObjectType::String(r)) => {
+                    std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
+                 }
+                 _ => false
+             }
         },
         _ => false,
     }
@@ -894,7 +950,7 @@ fn print_stack_value(value: Value, writer: &mut dyn Write) {
 mod tests {
 
     use evie_common::{errors::*, utf8_to_string, print_error};
-    use evie_native::clock;
+    use evie_native::{clock, to_string};
 
     use crate::vm::VirtualMachine;
 
@@ -1411,6 +1467,31 @@ mod tests {
         let output = utf8_to_string(&buf);
         // This will fail if it is not f64
         let _ = output.trim().parse::<f64>().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn vm_native_to_string() -> Result<()> {
+        let mut buf = vec![];
+        let mut vm = VirtualMachine::new_with_writer(Some(&mut buf));
+        let source = r#"
+        print to_string("hi");
+        print to_string(2);
+        print to_string(false);
+        print to_string(nil);
+        print to_string("2");
+        print to_string("hello " + to_string(1234));
+        "#;
+        define_native_fn("to_string", 1, &mut vm, to_string);
+        vm.interpret(source.to_string(), None)?;
+        let output = utf8_to_string(&buf);
+        assert_eq!(r#"hi
+2
+false
+Nil
+2
+hello 1234
+"#, output);
         Ok(())
     }
 }

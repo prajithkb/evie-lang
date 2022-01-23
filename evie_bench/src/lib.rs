@@ -8,18 +8,22 @@ mod tests {
     const CLOX_PATH: &str =
         "/Users/kprajith/workspace/crafting-interpretors/craftinginterpreters/clox";
     const VM_PATH: &str = "/Users/kprajith/workspace/rust/evie-lang/target/release/evie";
+    const WS_PATH: &str = "/Users/kprajith/workspace/rust/evie-lang/Cargo.toml";
     use cli_table::{print_stdout, Cell, Color, Style, Table};
     use evie_common::{bail, errors::*};
     use std::{ffi::OsStr, fs, path::Path, process::Command, time::Instant};
 
     #[test]
     fn perf_timings() -> Result<()> {
-        println!("This test runs the bench mark tests and compares the timing (performance) between clox and vm.\nIt does not assert on anything yet.\n");
+        println!("This test runs the bench mark tests and compares the timing (performance) between clox and vm.\nIt DOES NOT  assert on anything!\n");
+        println!("Building release...");
+        cargo_build_release()?;
         if !binary_path_exists() {
+            eprint!("Binary path {} does not exist, exiting!", VM_PATH);
             // Exit early if there is nothing to run
             return Ok(());
         }
-        cargo_build_release()?;
+        println!("Built release, starting test...");
         let dir_path = Path::new(TEST_CASE_PATH);
         let mut entries: Vec<_> = fs::read_dir(dir_path)?.collect();
         entries.sort_by(|a, b| {
@@ -109,6 +113,8 @@ mod tests {
         let cargo_run_release = Command::new("cargo")
             .arg("build")
             .arg("--release")
+            .arg("--manifest-path")
+            .arg(WS_PATH)
             .output()?;
         if !cargo_run_release.status.success() {
             println!(

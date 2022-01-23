@@ -4,17 +4,12 @@ use std::{
 };
 
 use evie_common::{bail, errors::*, ByteUnit, Writer};
-#[cfg(feature = "trace_enabled")]
-use evie_common::{log_enabled, Level};
 use evie_frontend::tokens::*;
 use evie_instructions::opcodes::Opcode;
-use evie_instructions::opcodes::{self};
-#[cfg(feature = "trace_enabled")]
-use std::io::stdout;
 
 use evie_memory::{
     chunk::Chunk,
-    objects::{GCObjectOf, Object, UserDefinedFunction, Value},
+    objects::{GCObjectOf, Object, ObjectType, UserDefinedFunction, Value},
     ObjectAllocator,
 };
 use num_enum::{FromPrimitive, IntoPrimitive};
@@ -186,6 +181,13 @@ impl<'a> Compiler<'a> {
         Compiler::new_with_type_and_writer(tokens, FunctionType::Script, None, allocater)
     }
 
+    pub fn new_with_writer(
+        tokens: &'a [Token],
+        allocater: &'a ObjectAllocator,
+        writer: Option<Writer<'a>>,
+    ) -> Self {
+        Compiler::new_with_type_and_writer(tokens, FunctionType::Script, writer, allocater)
+    }
     pub fn new_with_type(
         tokens: &'a [Token],
         function_type: FunctionType,
@@ -391,6 +393,7 @@ impl<'a> Compiler<'a> {
         } else {
             self.statement()?;
         }
+        self.match_and_advance(&[TokenType::Semicolon]);
         Ok(())
     }
 
@@ -490,7 +493,8 @@ impl<'a> Compiler<'a> {
         self.emit_return_and_log();
         let state = self.end_new_function();
         let up_values = &state.upvalues;
-        let function = Value::Object(Object::Function(state.function));
+        let function = Object::new_gc_object(ObjectType::Function(state.function), self.allocater);
+        let function = Value::Object(function);
         let index = self.add_constant(function);
         self.emit_opcode_and_bytes(Opcode::Closure, index);
         for u in up_values {
@@ -811,7 +815,10 @@ impl<'a> Compiler<'a> {
 
     fn string(&mut self, _can_assign: bool) -> Result<()> {
         if let Some(Literal::String(s)) = &self.previous().literal {
-            let value = Value::Object(Object::String(self.boxed_string(s)));
+            let value = Value::Object(Object::new_gc_object(
+                ObjectType::String(self.boxed_string(s)),
+                self.allocater,
+            ));
             self.emit_constant(value);
             Ok(())
         } else {
@@ -985,23 +992,36 @@ impl<'a> Compiler<'a> {
 
     fn emit_return_and_log(&mut self) {
         self.emit_return();
+        #[cfg(any(feature = "trace_enabled"))]
         {
-            let function = self.state.function.as_ref();
-            let name = function.to_string();
             if self.custom_writer.is_some() {
+                let function = self.state.function.as_ref();
+                let name = function.to_string();
                 let mut writer_opt = self.custom_writer.take();
                 let writer = writer_opt.as_deref_mut().expect("Writer expected");
-                opcodes::disassemble_chunk_with_writer(self.current_chunk(), &name, writer, true);
-                self.custom_writer = writer_opt;
-            }
-            #[cfg(feature = "trace_enabled")]
-            if log_enabled!(Level::Info) {
-                opcodes::disassemble_chunk_with_writer(
+                evie_instructions::opcodes::disassemble_chunk_with_writer(
                     self.current_chunk(),
                     &name,
-                    &mut stdout(),
+                    writer,
                     true,
                 );
+                self.custom_writer = writer_opt;
+            }
+        }
+        #[cfg(test)]
+        {
+            if self.custom_writer.is_some() {
+                let function = self.state.function.as_ref();
+                let name = function.to_string();
+                let mut writer_opt = self.custom_writer.take();
+                let writer = writer_opt.as_deref_mut().expect("Writer expected");
+                evie_instructions::opcodes::disassemble_chunk_with_writer(
+                    self.current_chunk(),
+                    &name,
+                    writer,
+                    true,
+                );
+                self.custom_writer = writer_opt;
             }
         }
     }
@@ -1064,7 +1084,10 @@ impl<'a> Compiler<'a> {
     fn identifier_constant(&mut self, mut token: Token) -> Result<ByteUnit> {
         let literal = token.literal.take();
         if let Literal::Identifier(s) = literal.expect("Expect string") {
-            let name = Value::Object(Object::String(self.boxed_string(&s)));
+            let name = Value::Object(Object::new_gc_object(
+                ObjectType::String(self.boxed_string(&s)),
+                self.allocater,
+            ));
             Ok(self.add_constant(name))
         } else {
             bail!(parse_error(&token, "Expect identifier"))
@@ -1379,8 +1402,11 @@ mod tests {
             u.chunk.as_ref().read_constant_at(0),
             u.chunk.as_ref().read_constant_at(3),
         ) {
-            (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => (l, r),
-            _ => panic!("This should not happen"),
+            (Value::Object(l), Value::Object(r)) => match (l.object_type, r.object_type) {
+                (ObjectType::String(l), ObjectType::String(r)) => (l, r),
+                _ => panic!("Test failed"),
+            },
+            _ => panic!("Test failed"),
         };
         assert_eq!(a.as_ref(), b.as_ref());
         assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()));
@@ -1761,7 +1787,6 @@ mod tests {
             &allocator,
         );
         let _ = compiler.compile()?;
-        println!("{}", &utf8_to_string(&buf));
         assert_eq!(
             r#"== <fn inner> ==
 0000 0008 OpCode[GetUpvalue]                0

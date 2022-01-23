@@ -1,13 +1,15 @@
-//! The memory crate
+//! Defines the data structures that are used across evie.
+//! Also defines the memory management (Garbage Collection) for evie
 use core::fmt::Debug;
 use std::{cell::Cell, ptr::NonNull};
 
-use objects::{GCObjectOf, ObjectMetada};
+use objects::{GCObjectOf, Tag};
 
 pub mod chunk;
 pub mod objects;
 
-/// A simple [objects::GCObjectOf] allocator
+/// A simple [objects::GCObjectOf] allocator.
+/// Internally uses [Box] to create/destroy objects
 #[derive(Default)]
 pub struct ObjectAllocator {
     bytes_allocated: Cell<usize>,
@@ -29,10 +31,8 @@ impl ObjectAllocator {
         let v = Box::new(object);
         self.increment_allocated_bytes_by(std::mem::size_of::<T>());
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(v)) };
-        self.increment_allocated_bytes_by(std::mem::size_of::<ObjectMetada>());
-        let obj = Box::new(ObjectMetada::default());
-        let obj = unsafe { NonNull::new_unchecked(Box::into_raw(obj)) };
-        GCObjectOf::new(obj, ptr)
+        self.increment_allocated_bytes_by(std::mem::size_of::<Tag>());
+        GCObjectOf::new(ptr)
     }
 
     /// # Safety
@@ -44,8 +44,7 @@ impl ObjectAllocator {
     {
         // Gets freed when the object is dropped
         let _object = Box::from_raw(object_of.reference.as_ptr());
-        let _object_metata = Box::from_raw(object_of.metadata.as_ptr());
-        let bytes_to_deallocate = std::mem::size_of::<T>() + std::mem::size_of::<ObjectMetada>();
+        let bytes_to_deallocate = std::mem::size_of::<T>() + std::mem::size_of::<Tag>();
         assert!(self.bytes_allocated.get() >= bytes_to_deallocate);
         self.decrement_allocated_bytes_by(bytes_to_deallocate);
     }
@@ -73,7 +72,7 @@ mod tests {
 
     use crate::{
         chunk::Chunk,
-        objects::{Function, GCObjectOf, Object, ObjectMetada, UserDefinedFunction, Value},
+        objects::{Function, GCObjectOf, Object, ObjectType, Tag, UserDefinedFunction, Value},
         ObjectAllocator,
     };
 
@@ -82,7 +81,7 @@ mod tests {
         let managed_objects = ObjectAllocator::new();
         let name: GCObjectOf<Box<str>> = managed_objects.alloc("object".into());
         assert_eq!(
-            std::mem::size_of::<Box<str>>() + std::mem::size_of::<ObjectMetada>(),
+            std::mem::size_of::<Box<str>>() + std::mem::size_of::<Tag>(),
             managed_objects.bytes_allocated()
         );
         let chunk = managed_objects.alloc(Chunk::new());
@@ -96,14 +95,14 @@ mod tests {
             std::mem::size_of::<Box<str>>()
                 + std::mem::size_of::<Function>()
                 + std::mem::size_of::<Chunk>()
-                + 3 * std::mem::size_of::<ObjectMetada>(),
+                + 3 * std::mem::size_of::<Tag>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(function) };
         assert_eq!(
             std::mem::size_of::<Box<str>>()
                 + std::mem::size_of::<Chunk>()
-                + 2 * std::mem::size_of::<ObjectMetada>(),
+                + 2 * std::mem::size_of::<Tag>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(name) };
@@ -112,7 +111,7 @@ mod tests {
     }
 
     // Commented test. Uncomment for perf later
-    // #[test]
+    #[test]
     fn timing() {
         let mut objects = ObjectAllocator::new();
         let constants = vec![
@@ -120,8 +119,14 @@ mod tests {
             Value::Number(1.0),
             Value::Boolean(true),
             Value::Boolean(false),
-            Value::Object(Object::String(objects.alloc("str".into()))),
-            Value::Object(Object::String(objects.alloc("stru".into()))),
+            Value::Object(Object::new_gc_object(
+                ObjectType::String(objects.alloc("str".into())),
+                &objects,
+            )),
+            Value::Object(Object::new_gc_object(
+                ObjectType::String(objects.alloc("stru".into())),
+                &objects,
+            )),
         ];
         let mut stack = [
             Value::Nil,
@@ -164,9 +169,10 @@ mod tests {
             (Value::Boolean(l), Value::Boolean(r)) => l == r,
             (Value::Nil, Value::Nil) => true,
             (Value::Number(l), Value::Number(r)) => num_equals(l, r),
-            (Value::Object(Object::String(l)), Value::Object(Object::String(r))) => {
-                l.as_ref() == r.as_ref()
-            }
+            (Value::Object(l), Value::Object(r)) => match (l.object_type, r.object_type) {
+                (ObjectType::String(l), ObjectType::String(r)) => l == r,
+                _ => false,
+            },
             _ => false,
         }
     }
