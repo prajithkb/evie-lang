@@ -8,3 +8,6 @@ version = "0.1.0"
 [dependencies]
 evie_common = {path = "../evie_common"}
 evie_memory = {path = "../evie_memory"}
+
+[features]
+nan_boxed = ["evie_memory/nan_boxed"]

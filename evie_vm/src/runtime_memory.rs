@@ -1,7 +1,10 @@
 //! Stores the runtime values of objects (used for storing global variables)
 use std::collections::HashMap;
 
-use evie_memory::objects::Value;
+#[cfg(feature = "nan_boxed")]
+use evie_memory::objects::nan_boxed::Value;
+#[cfg(not(feature = "nan_boxed"))]
+use evie_memory::objects::non_nan_boxed::Value;
 pub type Values = Objects<Box<str>, Value>;
 
 #[allow(dead_code)]

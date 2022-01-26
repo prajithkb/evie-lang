@@ -1,50 +1,81 @@
 //! Defines the data structures that are used across evie.
 //! Also defines the memory management (Garbage Collection) for evie
-use core::fmt::Debug;
-use std::{cell::Cell, ptr::NonNull};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ptr::NonNull,
+    rc::Rc,
+};
 
-use objects::{GCObjectOf, Tag};
+use objects::GCObjectOf;
 
 pub mod chunk;
 pub mod objects;
 
+type Mutable<T> = Rc<RefCell<T>>;
+
 /// A simple [objects::GCObjectOf] allocator.
 /// Internally uses [Box] to create/destroy objects
-#[derive(Default)]
 pub struct ObjectAllocator {
     bytes_allocated: Cell<usize>,
+    interned_strings: Mutable<HashMap<Box<str>, GCObjectOf<Box<str>>>>,
 }
 
 impl ObjectAllocator {
     /// A new instance of [ObjectAllocator]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         ObjectAllocator {
             bytes_allocated: Cell::new(0),
+            interned_strings: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
     /// Creates an instance of GCObject
-    pub fn alloc<T>(&self, object: T) -> GCObjectOf<T>
-    where
-        T: Debug,
-    {
+    pub fn alloc<T>(&self, object: T) -> GCObjectOf<T> {
         let v = Box::new(object);
-        self.increment_allocated_bytes_by(std::mem::size_of::<T>());
+        let bytes_allocated = std::mem::size_of::<T>();
+        self.increment_allocated_bytes_by(bytes_allocated);
+        #[cfg(feature = "trace_enabled")]
+        evie_common::trace!(
+            "Allocated {} bytes for {}",
+            std::mem::size_of::<T>(),
+            std::any::type_name::<T>()
+        );
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(v)) };
-        self.increment_allocated_bytes_by(std::mem::size_of::<Tag>());
         GCObjectOf::new(ptr)
+    }
+
+    /// Creates an instance of GCObject
+    pub fn alloc_str<T: AsRef<str>>(&self, object: T) -> GCObjectOf<Box<str>> {
+        let object = object.as_ref().to_string().into_boxed_str();
+        let v = self.interned_strings.borrow();
+        if let Some(string) = v.get(&object) {
+            *string
+        } else {
+            drop(v);
+            let string = self.alloc(object.clone());
+            let mut v = (*self.interned_strings).borrow_mut();
+            v.insert(object, string);
+            string
+        }
     }
 
     /// # Safety
     /// The caller should ensure that the object was note previously de allocated.
     /// This can cause double free.
-    pub unsafe fn free<T>(&self, object_of: GCObjectOf<T>)
-    where
-        T: Debug,
-    {
-        // Gets freed when the object is dropped
-        let _object = Box::from_raw(object_of.reference.as_ptr());
-        let bytes_to_deallocate = std::mem::size_of::<T>() + std::mem::size_of::<Tag>();
+    pub unsafe fn free<T>(&self, object_of: GCObjectOf<T>) {
+        {
+            // Gets freed when the object is dropped
+            Box::from_raw(object_of.reference.as_ptr());
+        }
+        let bytes_to_deallocate = std::mem::size_of::<T>();
+        #[cfg(feature = "trace_enabled")]
+        evie_common::trace!(
+            "Deallocated {} bytes for {}",
+            std::mem::size_of::<T>(),
+            std::any::type_name::<T>()
+        );
         assert!(self.bytes_allocated.get() >= bytes_to_deallocate);
         self.decrement_allocated_bytes_by(bytes_to_deallocate);
     }
@@ -54,14 +85,13 @@ impl ObjectAllocator {
         self.bytes_allocated.get()
     }
 
-    fn increment_allocated_bytes_by(&self, bytes: usize) {
-        let prev_size = self.bytes_allocated.get();
-        self.bytes_allocated.set(prev_size + bytes);
+    fn increment_allocated_bytes_by(&self, bytes_allocated: usize) {
+        self.bytes_allocated
+            .set(self.bytes_allocated() + bytes_allocated);
     }
 
     fn decrement_allocated_bytes_by(&self, bytes: usize) {
-        let prev_size = self.bytes_allocated.get();
-        self.bytes_allocated.set(prev_size - bytes);
+        self.bytes_allocated.set(self.bytes_allocated() - bytes);
     }
 }
 
@@ -72,7 +102,7 @@ mod tests {
 
     use crate::{
         chunk::Chunk,
-        objects::{Function, GCObjectOf, Object, ObjectType, Tag, UserDefinedFunction, Value},
+        objects::{Function, GCObjectOf, Object, ObjectType, Tag, UserDefinedFunction},
         ObjectAllocator,
     };
 
@@ -81,7 +111,7 @@ mod tests {
         let managed_objects = ObjectAllocator::new();
         let name: GCObjectOf<Box<str>> = managed_objects.alloc("object".into());
         assert_eq!(
-            std::mem::size_of::<Box<str>>() + std::mem::size_of::<Tag>(),
+            std::mem::size_of::<Box<str>>(),
             managed_objects.bytes_allocated()
         );
         let chunk = managed_objects.alloc(Chunk::new());
@@ -94,15 +124,12 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<Box<str>>()
                 + std::mem::size_of::<Function>()
-                + std::mem::size_of::<Chunk>()
-                + 3 * std::mem::size_of::<Tag>(),
+                + std::mem::size_of::<Chunk>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(function) };
         assert_eq!(
-            std::mem::size_of::<Box<str>>()
-                + std::mem::size_of::<Chunk>()
-                + 2 * std::mem::size_of::<Tag>(),
+            std::mem::size_of::<Box<str>>() + std::mem::size_of::<Chunk>(),
             managed_objects.bytes_allocated()
         );
         unsafe { managed_objects.free(name) };
@@ -110,38 +137,48 @@ mod tests {
         assert_eq!(0, managed_objects.bytes_allocated());
     }
 
-    // Commented test. Uncomment for perf later
     #[test]
-    fn timing() {
+    fn timing_non_nan_boxed_value() {
+        use crate::objects::non_nan_boxed::Value;
+
+        #[inline(always)]
+        fn value_equals(l: Value, r: Value) -> bool {
+            if l.is_bool() && r.is_bool() {
+                return l.as_bool() == r.as_bool();
+            } else if l.is_nil() && r.is_nil() {
+                return true;
+            } else if l.is_number() && r.is_number() {
+                return num_equals(l.as_number(), r.as_number());
+            } else if l.is_object() && r.is_object() {
+                match (l.as_object().object_type, r.as_object().object_type) {
+                    (ObjectType::String(l), ObjectType::String(r)) => {
+                        return std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
+                    }
+                    _ => return false,
+                }
+            }
+            false
+        }
+        #[inline(always)]
+        fn num_equals(l: f64, r: f64) -> bool {
+            (l - r).abs() < EPSILON
+        }
+
         let mut objects = ObjectAllocator::new();
         let constants = vec![
-            Value::Nil,
-            Value::Number(1.0),
-            Value::Boolean(true),
-            Value::Boolean(false),
-            Value::Object(Object::new_gc_object(
+            Value::number(1.0),
+            Value::bool(true),
+            Value::bool(false),
+            Value::object(Object::new_gc_object(
                 ObjectType::String(objects.alloc("str".into())),
                 &objects,
             )),
-            Value::Object(Object::new_gc_object(
+            Value::object(Object::new_gc_object(
                 ObjectType::String(objects.alloc("stru".into())),
                 &objects,
             )),
         ];
-        let mut stack = [
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-        ];
+        let mut stack = [Value::nil(); 10];
 
         let start = Instant::now();
         let mut count = 0;
@@ -153,30 +190,79 @@ mod tests {
                     let b = constants[j];
                     stack[0] = a;
                     stack[1] = b;
-                    stack[0] = Value::Boolean(value_equals(a, b));
+                    stack[0] = Value::bool(value_equals(a, b));
                     count += 1;
                 }
             }
         }
         println!(
-            "Time for {} operations ={} ms",
+            "Time for non nan boxed; {} operations ={} ms",
             operations,
             start.elapsed().as_millis()
         )
     }
-    fn value_equals(l: Value, r: Value) -> bool {
-        match (l, r) {
-            (Value::Boolean(l), Value::Boolean(r)) => l == r,
-            (Value::Nil, Value::Nil) => true,
-            (Value::Number(l), Value::Number(r)) => num_equals(l, r),
-            (Value::Object(l), Value::Object(r)) => match (l.object_type, r.object_type) {
-                (ObjectType::String(l), ObjectType::String(r)) => l == r,
-                _ => false,
-            },
-            _ => false,
+
+    #[test]
+    fn timing_nan_boxed_value() {
+        use crate::objects::nan_boxed::Value;
+        #[inline(always)]
+        fn value_equals(l: Value, r: Value) -> bool {
+            if l.is_bool() && r.is_bool() {
+                return l.as_bool() == r.as_bool();
+            } else if l.is_nil() && r.is_nil() {
+                return true;
+            } else if l.is_number() && r.is_number() {
+                return num_equals(l.as_number(), r.as_number());
+            } else if l.is_object() && r.is_object() {
+                match (l.as_object().object_type, r.as_object().object_type) {
+                    (ObjectType::String(l), ObjectType::String(r)) => {
+                        return std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
+                    }
+                    _ => return false,
+                }
+            }
+            false
         }
-    }
-    fn num_equals(l: f64, r: f64) -> bool {
-        (l - r).abs() < EPSILON
+        #[inline(always)]
+        fn num_equals(l: f64, r: f64) -> bool {
+            (l - r).abs() < EPSILON
+        }
+
+        let mut objects = ObjectAllocator::new();
+        let constants = vec![
+            Value::number(1.0),
+            Value::bool(true),
+            Value::bool(false),
+            Value::object(Object::new_gc_object(
+                ObjectType::String(objects.alloc("str".into())),
+                &objects,
+            )),
+            Value::object(Object::new_gc_object(
+                ObjectType::String(objects.alloc("stru".into())),
+                &objects,
+            )),
+        ];
+        let mut stack = [Value::nil(); 10];
+
+        let start = Instant::now();
+        let mut count = 0;
+        let operations = 10000000;
+        while count < operations {
+            for i in 0..constants.len() {
+                for j in 0..constants.len() {
+                    let a = constants[i];
+                    let b = constants[j];
+                    stack[0] = a;
+                    stack[1] = b;
+                    stack[0] = Value::bool(value_equals(a, b));
+                    count += 1;
+                }
+            }
+        }
+        println!(
+            "Time for nan_boxed; {} operations ={} ms",
+            operations,
+            start.elapsed().as_millis()
+        )
     }
 }

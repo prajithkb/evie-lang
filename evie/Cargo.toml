@@ -10,4 +10,5 @@ evie_common = {path = "../evie_common"}
 evie_native = {path = "../evie_native"}
 evie_vm = {path = "../evie_vm"}
 [features]
+nan_boxed = ["evie_vm/nan_boxed", "evie_native/nan_boxed"]
 trace_enabled = ["evie_vm/trace_enabled", "evie_native/trace_enabled"]

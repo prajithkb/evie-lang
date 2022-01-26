@@ -1,10 +1,12 @@
 use std::{convert::TryFrom, fmt::Display, io::Write};
 
 use evie_common::ByteUnit;
-use evie_memory::{
-    chunk::Chunk,
-    objects::{ObjectType, Value},
-};
+use evie_memory::{chunk::Chunk, objects::ObjectType};
+
+#[cfg(feature = "nan_boxed")]
+use evie_memory::objects::nan_boxed::Value;
+#[cfg(not(feature = "nan_boxed"))]
+use evie_memory::objects::non_nan_boxed::Value;
 
 /// The supported op codes for Evie VM.
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -243,8 +245,8 @@ pub fn closure_instruction(
     print_value(chunk.constants.read_item_at(constant as usize), writer);
     writeln!(writer, "'").expect("write failed");
     let v = chunk.constants.read_item_at(constant as usize);
-    if let Value::Object(o) = v {
-        if let ObjectType::Function(c) = o.object_type {
+    if v.is_object() {
+        if let ObjectType::Function(c) = v.as_object().object_type {
             let function = *c;
             for _ in 0..function.upvalue_count {
                 let is_local = chunk.code.read_item_at(offset);
@@ -369,7 +371,11 @@ pub fn disassemble_instruction(
 mod tests {
 
     use evie_common::{errors::*, utf8_to_string, ByteUnit};
-    use evie_memory::{chunk::Chunk, objects::Value};
+    use evie_memory::chunk::Chunk;
+    #[cfg(feature = "nan_boxed")]
+    use evie_memory::objects::nan_boxed::Value;
+    #[cfg(not(feature = "nan_boxed"))]
+    use evie_memory::objects::non_nan_boxed::Value;
 
     use crate::opcodes::{disassemble_chunk_with_writer, Opcode};
 
@@ -378,17 +384,17 @@ mod tests {
         let mut chunk = Chunk::new();
 
         // -((1.2 + 3.4)/5.6)
-        let constant = chunk.add_constant(Value::Number(1.2));
+        let constant = chunk.add_constant(Value::number(1.2));
         chunk.write_chunk(Opcode::Constant.into(), 123);
         chunk.write_chunk(constant as ByteUnit, 123);
 
-        let constant = chunk.add_constant(Value::Number(3.4));
+        let constant = chunk.add_constant(Value::number(3.4));
         chunk.write_chunk(Opcode::Constant.into(), 123);
         chunk.write_chunk(constant as ByteUnit, 123);
 
         chunk.write_chunk(Opcode::Add.into(), 123);
 
-        let constant = chunk.add_constant(Value::Number(5.6));
+        let constant = chunk.add_constant(Value::number(5.6));
         chunk.write_chunk(Opcode::Constant.into(), 123);
         chunk.write_chunk(constant as ByteUnit, 123);
 

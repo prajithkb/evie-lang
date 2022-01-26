@@ -13,4 +13,5 @@ evie_memory = {path = "../evie_memory"}
 ctor = "0.1.21"
 
 [features]
+nan_boxed = ["evie_memory/nan_boxed"]
 trace_enabled = []

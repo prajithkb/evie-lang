@@ -17,4 +17,5 @@ evie_native = {path = "../evie_native"}
 ctor = "0.1.21"
 
 [features]
-trace_enabled = ["evie_frontend/trace_enabled", "evie_compiler/trace_enabled", "evie_native/trace_enabled"]
+nan_boxed = ["evie_memory/nan_boxed", "evie_compiler/nan_boxed", "evie_instructions/nan_boxed", "evie_native/nan_boxed"]
+trace_enabled = ["evie_memory/trace_enabled", "evie_frontend/trace_enabled", "evie_compiler/trace_enabled", "evie_native/trace_enabled"]

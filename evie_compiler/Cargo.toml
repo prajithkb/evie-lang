@@ -13,4 +13,5 @@ evie_memory = {path = "../evie_memory"}
 num_enum = "0.5.4"
 
 [features]
-trace_enabled = []
+nan_boxed = ["evie_instructions/nan_boxed", "evie_memory/nan_boxed"]
+trace_enabled = ["evie_memory/trace_enabled"]

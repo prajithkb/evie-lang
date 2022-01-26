@@ -1,5 +1,4 @@
 use std::collections::{HashMap};
-use std::f64::EPSILON;
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
 use std::ops::Range;
@@ -16,8 +15,11 @@ use evie_instructions::opcodes::{self, Opcode};
 use evie_memory::{ObjectAllocator};
 use evie_memory::chunk::Chunk;
 use evie_memory::objects::{Closure, Location, NativeFunction, NativeFn, Class, Instance, UserDefinedFunction, BoundMethod, Object};
-use evie_memory::objects::{Value, ObjectType, GCObjectOf, Upvalue};
-
+use evie_memory::objects::{ObjectType, GCObjectOf, Upvalue};
+#[cfg(feature = "nan_boxed")]
+use evie_memory::objects::nan_boxed::Value;
+#[cfg(not(feature = "nan_boxed"))]
+use evie_memory::objects::non_nan_boxed::Value;
 use crate::runtime_memory::Values;
 
 
@@ -54,7 +56,7 @@ pub fn define_native_fn(name: &str, arity: usize, vm: &mut VirtualMachine, nativ
     let box_str =name.to_string().into_boxed_str();
     let name = vm.allocator.alloc(box_str.clone());
     let native_function = vm.allocator.alloc(NativeFunction::new(name, arity, native_fn));
-    vm.runtime_values.insert(box_str, Value::Object(Object::new_gc_object(ObjectType::NativeFunction(native_function), &vm.allocator)));
+    vm.runtime_values.insert(box_str, Value::object(Object::new_gc_object(ObjectType::NativeFunction(native_function), &vm.allocator)));
 }
 
 /// Optional args for the [VirtualMachine]. 
@@ -142,7 +144,7 @@ impl<'a> VirtualMachine<'a> {
 
     /// Interprets the given source code.
     pub fn interpret(&mut self, source: String, optional_args: Option<Args>) -> Result<()> {
-        let bytes_allocated_by_compiler = self.allocator.bytes_allocated();
+        let native_functions = self.allocator.bytes_allocated();
         self.reset_vm();
         self.optional_args = optional_args;
         let mut scanner = Scanner::new(source);
@@ -153,9 +155,12 @@ impl<'a> VirtualMachine<'a> {
         let mut compiler_buf = Vec::new();
         let compiler = Compiler::new_with_writer(tokens, &self.allocator, Some(&mut compiler_buf));
         let main_function = compiler.compile()?;
+        let after_compiler_allocation = self.allocator.bytes_allocated();
         #[cfg(feature = "trace_enabled")]
         {
-            println!("{}", &utf8_to_string(&compiler_buf));
+            if evie_common::log_enabled!(Level::Trace) {
+                println!("{}", &utf8_to_string(&compiler_buf));
+            }
         }
         let upvalues = self.allocator.alloc(Vec::<GCObjectOf<Upvalue>>::new());
         trace!("Compiled in {} us", start_time.elapsed().as_micros());
@@ -163,13 +168,15 @@ impl<'a> VirtualMachine<'a> {
         let closure = self.allocator.alloc(Closure::new(main_function, upvalues));
         let script = ObjectType::Closure(closure);
         self.push_to_call_frame(CallFrame::new(0, closure));
-        self.push_to_stack(Value::Object(Object::new_gc_object(script, &self.allocator)));
+        self.push_to_stack(Value::object(Object::new_gc_object(script, &self.allocator)));
         let start_time = Instant::now();
         let result = self.run();
-        trace!("Ran in {} us, Bytes allocated by compiler: {}, Bytes allocated by VM ={}", 
+        trace!("Ran in {} us, Total Allocation: {} bytes, Native Functions: {} bytes, Compiler: {} bytes, VM: {} bytes", 
             start_time.elapsed().as_micros(), 
-            bytes_allocated_by_compiler, 
-            self.allocator.bytes_allocated() - bytes_allocated_by_compiler);
+            self.allocator.bytes_allocated(),
+            native_functions,
+            after_compiler_allocation- native_functions, 
+            self.allocator.bytes_allocated() - after_compiler_allocation);
         result
     }
 
@@ -296,8 +303,9 @@ impl<'a> VirtualMachine<'a> {
                     self.push_to_stack(result);
                 }
                 Opcode::Negate => {
-                    if let Value::Number(v) = self.peek_at(0) {
-                        let result = Value::Number(-v);
+                    let v = self.peek_at(0);
+                    if v.is_number() {
+                        let result = Value::number(-v.as_number());
                         self.pop_from_stack();
                         self.push_to_stack(result);
                     } else {
@@ -305,27 +313,27 @@ impl<'a> VirtualMachine<'a> {
                     }
                 }
                 Opcode::Add => self.add()?,
-                Opcode::Subtract => self.binary_op(|a, b| Value::Number(a - b))?,
-                Opcode::Multiply => self.binary_op(|a, b| Value::Number(a * b))?,
-                Opcode::Divide => self.binary_op(|a, b| Value::Number(a / b))?,
-                Opcode::Nil => self.push_to_stack(Value::Nil),
-                Opcode::True => self.push_to_stack(Value::Boolean(true)),
-                Opcode::False => self.push_to_stack(Value::Boolean(false)),
+                Opcode::Subtract => self.binary_op(|a, b| Value::number(a - b))?,
+                Opcode::Multiply => self.binary_op(|a, b| Value::number(a * b))?,
+                Opcode::Divide => self.binary_op(|a, b| Value::number(a / b))?,
+                Opcode::Nil => self.push_to_stack(Value::nil()),
+                Opcode::True => self.push_to_stack(Value::bool(true)),
+                Opcode::False => self.push_to_stack(Value::bool(false)),
                 Opcode::Not => {
                     let v = self.pop_from_stack();
-                    self.push_to_stack(Value::Boolean(is_falsey(&v)))
+                    self.push_to_stack(Value::bool(is_falsey(&v)))
                 }
                 Opcode::BangEqual => {
                     let v = self.equals();
-                    self.push_to_stack(Value::Boolean(!v))
+                    self.push_to_stack(Value::bool(!v))
                 }
-                Opcode::Greater => self.binary_op(|a, b| Value::Boolean(a > b))?,
-                Opcode::GreaterEqual => self.binary_op(|a, b| Value::Boolean(a >= b))?,
-                Opcode::Less => self.binary_op(|a, b| Value::Boolean(a < b))?,
-                Opcode::LessEqual => self.binary_op(|a, b| Value::Boolean(a <= b))?,
+                Opcode::Greater => self.binary_op(|a, b| Value::bool(a > b))?,
+                Opcode::GreaterEqual => self.binary_op(|a, b| Value::bool(a >= b))?,
+                Opcode::Less => self.binary_op(|a, b| Value::bool(a < b))?,
+                Opcode::LessEqual => self.binary_op(|a, b| Value::bool(a <= b))?,
                 Opcode::EqualEqual => {
                     let v = self.equals();
-                    self.push_to_stack(Value::Boolean(v))
+                    self.push_to_stack(Value::bool(v))
                 }
                 Opcode::Print => {
                     let v = self.pop_from_stack();
@@ -424,7 +432,7 @@ impl<'a> VirtualMachine<'a> {
                         }
                     }
                     let object = self.allocator.alloc(closure);
-                    let stack_value = Value::Object(Object::new_gc_object(ObjectType::Closure(object), &self.allocator));
+                    let stack_value = Value::object(Object::new_gc_object(ObjectType::Closure(object), &self.allocator));
                     self.push_to_stack(stack_value);
                 }
                 Opcode::GetUpvalue => {
@@ -467,15 +475,15 @@ impl<'a> VirtualMachine<'a> {
                     let class = self.read_string(chunk, current_ip)?;
                     let methods= self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, GCObjectOf<Closure>>::new());
                     let class_obj = self.allocator.alloc(Class::new(class, methods));
-                    let value = Value::Object(Object::new_gc_object(ObjectType::Class(class_obj), &self.allocator));
+                    let value = Value::object(Object::new_gc_object(ObjectType::Class(class_obj), &self.allocator));
                     self.push_to_stack(value);
                 }
                 Opcode::SetProperty => {
                     let property = self.read_string(chunk, current_ip)?;
                     let value = self.peek_at(0);
-                    let mut instance = self.peek_at(1);
-                    if let Value::Object(o) = &mut instance {
-                        if let ObjectType::Instance(mut i) = &o.object_type {
+                    let instance = self.peek_at(1);
+                    if instance.is_object() {
+                        if let ObjectType::Instance(mut i) = &instance.as_object().object_type  {
                             self.set_property(&mut i, property, value)?;
                             let value = self.pop_from_stack();
                             self.pop_from_stack();
@@ -489,8 +497,8 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::GetProperty => {
                     let property = self.read_string(chunk, current_ip)?;
                     let instance = self.peek_at(0);
-                    if let Value::Object(o) = instance {
-                        if let ObjectType::Instance(i) = o.object_type {
+                    if instance.is_object() {
+                        if let ObjectType::Instance(i) = instance.as_object().object_type {
                             let v = self.get_property(i, property)?;
                             self.pop_from_stack();
                             self.push_to_stack(v);
@@ -519,8 +527,8 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn invoke(&mut self, receiver: Value, method: GCObjectOf<Box<str>>, fn_start_stack_index: usize) -> Result<()> {
-        if let Value::Object(o) = receiver {
-            if let ObjectType::Instance(i) = o.object_type {
+        if receiver.is_object() {
+            if let ObjectType::Instance(i) = receiver.as_object().object_type {
                 if let Some(closure) = i.class.methods.get(&method) {
                     self.set_stack_mut(fn_start_stack_index, receiver);
                     self.push_closure_to_call_frame(*closure, fn_start_stack_index)?;
@@ -554,13 +562,13 @@ impl<'a> VirtualMachine<'a> {
     fn bind_method(&mut self, instance: GCObjectOf<Instance>, method: GCObjectOf<Closure>) -> Value{
         self.pop_from_stack();
         let bound_method = self.allocator.alloc(BoundMethod(instance, method));
-        Value::Object(Object::new_gc_object(ObjectType::BoundMethod(bound_method), &self.allocator))
+        Value::object(Object::new_gc_object(ObjectType::BoundMethod(bound_method), &self.allocator))
     }
 
     fn define_method(&mut self, method_name: GCObjectOf<Box<str>>) -> Result<()> {
         let value = self.peek_at(0);
-        let method = if let Value::Object(c) = value {
-            if let ObjectType::Closure(c) = c.object_type {
+        let method = if value.is_object() {
+            if let ObjectType::Closure(c) = value.as_object().object_type {
                 c
             } else {
                 panic!("{}", self.runtime_error(&format!("VM BUG: expected a closure but got {}", value)));
@@ -568,8 +576,9 @@ impl<'a> VirtualMachine<'a> {
         } else {
             panic!("{}", self.runtime_error(&format!("VM BUG: expected a closure but got {}", value)));
         };
-        if let Value::Object(o) = self.peek_at(1) {
-            if let ObjectType::Class(c) = o.object_type {
+        let v = self.peek_at(1);
+        if v.is_object() {
+            if let ObjectType::Class(c) = v.as_object().object_type {
                 let mut methods = c.methods;
                 methods.insert(method_name, method);
             }
@@ -651,7 +660,8 @@ impl<'a> VirtualMachine<'a> {
     fn call_value(&mut self, arg_count: usize, value: Value) -> Result<()> {
         let arg_count = arg_count as usize;
         let start_index = self.stack_top - 1 - arg_count;
-        if let Value::Object(object) = value {
+        if value.is_object() {
+            let object = value.as_object();
             match object.object_type {
                 ObjectType::Closure(c) => {
                         self.check_arguments(&c.function.name.unwrap(), c.function.arity,arg_count)?;
@@ -661,9 +671,9 @@ impl<'a> VirtualMachine<'a> {
                         let methods = class.methods;
                         let fields = self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, Value>::new());
                         let instance = self.allocator.alloc(Instance::new(class, fields));
-                        let receiver = Value::Object(Object::new_gc_object(ObjectType::Instance(instance), &self.allocator));
+                        let receiver = Value::object(Object::new_gc_object(ObjectType::Instance(instance), &self.allocator));
                         // TODO preallocate this;
-                        let init = self.allocator.alloc("init".to_string().into_boxed_str());
+                        let init = self.allocator.alloc_str("init");
                         if let Some(init) = methods.get(&init) {
                             self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
                             // set the receiver at start index for the constructor;
@@ -753,29 +763,21 @@ impl<'a> VirtualMachine<'a> {
     #[inline(always)]
     fn read_string(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<Box<str>>> {
         let constant = self.read_constant(chunk, ip)?;
-        match constant {
-            Value::Object(o) => {
-                match o.object_type {
-                    ObjectType::String(s) => Ok(s),
-                    _ => Err(self.runtime_error("message").into()),
-                }
-            }
-            _ => Err(self.runtime_error("message").into()),
+        let o = constant.as_object();
+        if let ObjectType::String(s) = o.object_type {
+            return Ok(s)
         }
+        panic!("{}", self.runtime_error("Not a String"))
     }
 
     #[inline(always)]
     fn read_function(&mut self, chunk:  &Chunk, ip: &mut usize) -> Result<GCObjectOf<UserDefinedFunction>> {
         let constant = self.read_constant(chunk, ip)?;
-        match constant {
-            Value::Object(o) => {
-                match o.object_type {
-                    ObjectType::Function(s) => Ok(s),
-                    _ => bail!(self.runtime_error("Not a function")),
-                }
-            }   
-            _ => bail!(self.runtime_error("Not a function")),
+        let o = constant.as_object();
+        if let ObjectType::Function(s) = o.object_type {
+            return Ok(s)
         }
+        panic!("{}", self.runtime_error("Not a Function"))
     }
 
     fn runtime_error(&self, message: &str) -> ErrorKind {
@@ -823,41 +825,41 @@ impl<'a> VirtualMachine<'a> {
     #[inline(always)]
     fn binary_op(&mut self, op: fn(f64, f64) -> Value) -> Result<()> {
         let (left, right) = (self.peek_at(1), self.peek_at(0));
-        let (left, right) = match (left, right) {
-            (Value::Number(l), Value::Number(r)) => (l, r),
-            _ => bail!(self.runtime_error("Can perform binary operations only on numbers.")),
-        };
-        self.binary_op_with_num(left, right, op);
+        if left.is_number() && right.is_number() {
+            let left = left.as_number();
+            let right = right.as_number();
+            self.binary_op_with_num(left, right, op);
+        } else {
+            bail!(self.runtime_error("Can perform binary operations only on numbers."))
+        }
         Ok(())
     }
 
     fn add(&mut self) -> Result<()> {
         let (left, right) = (self.peek_at(1), self.peek_at(0));
-        match (left, right){
-            (Value::Object(l), Value::Object(r)) => match (l.object_type,r.object_type) {
-                (ObjectType::String(l), ObjectType::String(r)) => {
-                    let mut concatenated_string = String::new();
-                            concatenated_string.push_str(&l);
-                            concatenated_string.push_str(&r);
-                            self.pop_from_stack();
-                            self.pop_from_stack();
-                            let allocated_string = self.allocator.alloc(concatenated_string.into_boxed_str());
-                            let sv = Value::Object(Object::new_gc_object(ObjectType::String(allocated_string), &self.allocator));
-                            self.push_to_stack(sv);
-                            Ok(())
-                }
-                _ => bail!(self.runtime_error(&format!(
-                    "Add can be perfomed only on numbers or strings, got '{}' and '{}'",
-                    left,
-                    right,
-                ))),
+        if left.is_number() && right.is_number() {
+            self.binary_op(|a, b| Value::number(a + b))?;
+            Ok(())
+        } else if left.is_object() && right.is_object() {
+            if let (ObjectType::String(l), ObjectType::String(r)) = (left.as_object().object_type, right.as_object().object_type) {
+                let mut concatenated_string = String::new();
+                concatenated_string.push_str(&l);
+                concatenated_string.push_str(&r);
+                self.pop_from_stack();
+                self.pop_from_stack();
+                let allocated_string = self.allocator.alloc_str(concatenated_string);
+                let sv = Value::object(Object::new_gc_object(ObjectType::String(allocated_string), &self.allocator));
+                self.push_to_stack(sv);
+                Ok(())
+            } else {
+                Ok(())
             }
-            (Value::Number(_), Value::Number(_)) => self.binary_op(|a, b| Value::Number(a + b)),
-            _ => bail!(self.runtime_error(&format!(
+        } else {
+            bail!(self.runtime_error(&format!(
                 "Add can be perfomed only on numbers or strings, got '{}' and '{}'",
                 left,
                 right,
-            ))),
+            )))
         }
     }
 
@@ -912,34 +914,41 @@ fn runtime_vm_error(line: usize, message: &str) -> ErrorKind {
     ErrorKind::RuntimeError(format!("Line: {}, message: {}", line, message))
 }
 
-#[inline(always)]
-fn num_equals(l: f64, r: f64) -> bool {
-    (l - r).abs() < EPSILON
-}
+#[cfg(feature="nan_boxed")]
 #[inline(always)]
 fn value_equals(l: Value, r: Value) -> bool {
-    match (l, r) {
-        (Value::Boolean(l), Value::Boolean(r)) => l == r,
-        (Value::Nil, Value::Nil) => true,
-        (Value::Number(l), Value::Number(r)) => num_equals(l, r),
-        (Value::Object(l), Value::Object(r)) => {
-             match (l.object_type,r.object_type) {
-                 (ObjectType::String(l), ObjectType::String(r)) => {
-                    std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
-                 }
-                 _ => false
-             }
-        },
-        _ => false,
+    l == r
+}
+
+#[cfg(not(feature="nan_boxed"))]
+#[inline(always)]
+fn num_equals(l: f64, r: f64) -> bool {
+    (l - r).abs() < std::f64::EPSILON
+}
+#[cfg(not(feature="nan_boxed"))]
+#[inline(always)]
+fn value_equals(l: Value, r: Value) -> bool {
+    if l.is_bool() && r.is_bool() {
+        return l.as_bool() == r.as_bool()
+    } else if l.is_nil() && r.is_nil() {
+        return true
+    } else if l.is_number() && r.is_number() {
+        return num_equals(l.as_number(), r.as_number())
+    } else if l.is_object() && r.is_object() {
+        match (l.as_object().object_type,r.as_object().object_type) {
+            (ObjectType::String(l), ObjectType::String(r)) => {
+               return std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
+            }
+            _ => return false
+        }
     }
+    false
 }
 
 fn is_falsey(value: &Value) -> bool {
-    match value {
-        Value::Boolean(b) => !b,
-        Value::Nil => true,
-        _ => false,
-    }
+    if value.is_bool() {
+         !value.as_bool()
+    } else { value.is_nil() }
 }
 
 fn print_stack_value(value: Value, writer: &mut dyn Write) {
@@ -1488,7 +1497,7 @@ mod tests {
         assert_eq!(r#"hi
 2
 false
-Nil
+nil
 2
 hello 1234
 "#, output);

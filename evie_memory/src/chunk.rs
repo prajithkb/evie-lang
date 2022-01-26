@@ -1,6 +1,9 @@
 use evie_common::ByteUnit;
 
-use crate::objects::Value;
+#[cfg(feature = "nan_boxed")]
+use crate::objects::nan_boxed::Value;
+#[cfg(not(feature = "nan_boxed"))]
+use crate::objects::non_nan_boxed::Value;
 
 ///  Chunk in evie holds the byte code & constants. Created by the Compiler.
 #[derive(Debug, Clone)]

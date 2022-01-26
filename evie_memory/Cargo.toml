@@ -12,3 +12,7 @@ evie_common = {path = "../evie_common"}
 
 [dev-dependencies]
 num_enum = "0.5.4"
+
+[features]
+nan_boxed = []
+trace_enabled = []

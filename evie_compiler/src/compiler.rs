@@ -1,5 +1,5 @@
 use std::{
-    collections::{linked_list::IterMut, HashMap, LinkedList},
+    collections::{linked_list::IterMut, LinkedList},
     iter::Rev,
 };
 
@@ -9,9 +9,14 @@ use evie_instructions::opcodes::Opcode;
 
 use evie_memory::{
     chunk::Chunk,
-    objects::{GCObjectOf, Object, ObjectType, UserDefinedFunction, Value},
+    objects::{GCObjectOf, Object, ObjectType, UserDefinedFunction},
     ObjectAllocator,
 };
+
+#[cfg(feature = "nan_boxed")]
+use evie_memory::objects::nan_boxed::Value;
+#[cfg(not(feature = "nan_boxed"))]
+use evie_memory::objects::non_nan_boxed::Value;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 fn parse_error(token: &Token, message: &str) -> ErrorKind {
@@ -172,7 +177,6 @@ pub struct Compiler<'a> {
     custom_writer: Option<Writer<'a>>,
     current_class: Option<ClassCompiler>,
     class_compilers: LinkedList<ClassCompiler>,
-    strings: HashMap<String, GCObjectOf<Box<str>>>,
     allocater: &'a ObjectAllocator,
 }
 #[allow(dead_code)]
@@ -217,7 +221,6 @@ impl<'a> Compiler<'a> {
             custom_writer,
             current_class: None,
             class_compilers: LinkedList::new(),
-            strings: HashMap::new(),
             allocater,
         };
         c.current_scope_mut().locals.push(Local::new("", Some(0)));
@@ -375,11 +378,14 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn compile(mut self) -> Result<GCObjectOf<UserDefinedFunction>> {
+        #[cfg(all(feature = "nan_boxed", feature = "trace_enabled"))]
+        evie_common::trace!("Nan boxing enabled");
+        #[cfg(all(not(feature = "nan_boxed"), feature = "trace_enabled"))]
+        evie_common::trace!("Nan boxing disabled");
         while !self.is_at_end() {
             self.declaration()?;
         }
         self.emit_return_and_log();
-        self.strings.clear();
         Ok(self.state.function)
     }
 
@@ -494,7 +500,7 @@ impl<'a> Compiler<'a> {
         let state = self.end_new_function();
         let up_values = &state.upvalues;
         let function = Object::new_gc_object(ObjectType::Function(state.function), self.allocater);
-        let function = Value::Object(function);
+        let function = Value::object(function);
         let index = self.add_constant(function);
         self.emit_opcode_and_bytes(Opcode::Closure, index);
         for u in up_values {
@@ -805,7 +811,7 @@ impl<'a> Compiler<'a> {
 
     fn number(&mut self, _can_assign: bool) -> Result<()> {
         if let Some(Literal::Number(n)) = &self.previous().literal {
-            let value = Value::Number(*n);
+            let value = Value::number(*n);
             self.emit_constant(value);
             Ok(())
         } else {
@@ -815,7 +821,7 @@ impl<'a> Compiler<'a> {
 
     fn string(&mut self, _can_assign: bool) -> Result<()> {
         if let Some(Literal::String(s)) = &self.previous().literal {
-            let value = Value::Object(Object::new_gc_object(
+            let value = Value::object(Object::new_gc_object(
                 ObjectType::String(self.boxed_string(s)),
                 self.allocater,
             ));
@@ -938,13 +944,7 @@ impl<'a> Compiler<'a> {
 
     #[inline]
     fn boxed_string(&mut self, name: &str) -> GCObjectOf<Box<str>> {
-        if let Some(s) = self.strings.get(name) {
-            *s
-        } else {
-            let new_string = self.allocater.alloc(name.into());
-            self.strings.insert(name.to_string(), new_string);
-            new_string
-        }
+        self.allocater.alloc_str(name)
     }
 
     #[inline]
@@ -1084,7 +1084,7 @@ impl<'a> Compiler<'a> {
     fn identifier_constant(&mut self, mut token: Token) -> Result<ByteUnit> {
         let literal = token.literal.take();
         if let Literal::Identifier(s) = literal.expect("Expect string") {
-            let name = Value::Object(Object::new_gc_object(
+            let name = Value::object(Object::new_gc_object(
                 ObjectType::String(self.boxed_string(&s)),
                 self.allocater,
             ));
@@ -1398,18 +1398,18 @@ mod tests {
         );
         let function = compiler.compile()?;
         let u = &*function;
-        let (a, b) = match (
+        let (a, b) = (
             u.chunk.as_ref().read_constant_at(0),
             u.chunk.as_ref().read_constant_at(3),
-        ) {
-            (Value::Object(l), Value::Object(r)) => match (l.object_type, r.object_type) {
-                (ObjectType::String(l), ObjectType::String(r)) => (l, r),
-                _ => panic!("Test failed"),
-            },
-            _ => panic!("Test failed"),
-        };
-        assert_eq!(a.as_ref(), b.as_ref());
-        assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()));
+        );
+        if a.is_object() && b.is_object() {
+            if let (ObjectType::String(a), ObjectType::String(b)) =
+                (a.as_object().object_type, b.as_object().object_type)
+            {
+                assert_eq!(a.as_ref(), b.as_ref());
+                assert!(std::ptr::eq(a.reference.as_ptr(), b.reference.as_ptr()));
+            }
+        }
         Ok(())
     }
 

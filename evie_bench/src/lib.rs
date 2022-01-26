@@ -113,6 +113,7 @@ mod tests {
         let cargo_run_release = Command::new("cargo")
             .arg("build")
             .arg("--release")
+            .arg("--features=nan_boxed")
             .arg("--manifest-path")
             .arg(WS_PATH)
             .output()?;
