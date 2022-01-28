@@ -7,6 +7,7 @@ version = "0.1.0"
 
 [dependencies]
 evie_common = {path = "../evie_common"}
+evie_native = {path = "../evie_native"}
 evie_vm = {path = "../evie_vm"}
 
 [dev-dependencies]

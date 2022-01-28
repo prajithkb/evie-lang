@@ -389,6 +389,7 @@ dependencies = [
  "criterion",
  "ctor",
  "evie_common",
+ "evie_native",
  "evie_vm",
 ]
 

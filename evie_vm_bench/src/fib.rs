@@ -5,8 +5,7 @@ fun fib(n) {
   }
   
   var start = clock();
-  print fib(_COUNT_);
-  print clock() - start;
+  fib(_COUNT_);
 "#;
 
 pub fn src(count: usize) -> String {

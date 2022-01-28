@@ -144,6 +144,7 @@ impl<'a> VirtualMachine<'a> {
 
     /// Interprets the given source code.
     pub fn interpret(&mut self, source: String, optional_args: Option<Args>) -> Result<()> {
+        #[cfg(feature = "trace_enabled")]
         let native_functions = self.allocator.bytes_allocated();
         self.reset_vm();
         self.optional_args = optional_args;
@@ -155,6 +156,7 @@ impl<'a> VirtualMachine<'a> {
         let mut compiler_buf = Vec::new();
         let compiler = Compiler::new_with_writer(tokens, &self.allocator, Some(&mut compiler_buf));
         let main_function = compiler.compile()?;
+        #[cfg(feature = "trace_enabled")]
         let after_compiler_allocation = self.allocator.bytes_allocated();
         #[cfg(feature = "trace_enabled")]
         {
@@ -169,8 +171,11 @@ impl<'a> VirtualMachine<'a> {
         let script = ObjectType::Closure(closure);
         self.push_to_call_frame(CallFrame::new(0, closure));
         self.push_to_stack(Value::object(Object::new_gc_object(script, &self.allocator)));
+        #[cfg(feature = "trace_enabled")]
         let start_time = Instant::now();
+        #[allow(clippy::let_and_return)]
         let result = self.run();
+        #[cfg(feature = "trace_enabled")]
         trace!("Ran in {} us, Total Allocation: {} bytes, Native Functions: {} bytes, Compiler: {} bytes, VM: {} bytes", 
             start_time.elapsed().as_micros(), 
             self.allocator.bytes_allocated(),

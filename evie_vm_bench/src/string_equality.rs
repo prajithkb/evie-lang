@@ -49,12 +49,6 @@ while (i < _COUNT_) {
 }
 
 var elapsed = clock() - start;
-print "loop";
-print loopTime;
-print "elapsed";
-print elapsed;
-print "equals";
-print elapsed - loopTime;
 "#;
 
 pub fn src(count: usize) -> String {
