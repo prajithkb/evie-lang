@@ -949,6 +949,7 @@ fn value_equals(l: Value, r: Value) -> bool {
     false
 }
 
+#[inline(always)]
 fn is_falsey(value: &Value) -> bool {
     if value.is_bool() {
          !value.as_bool()
