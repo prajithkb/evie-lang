@@ -821,10 +821,7 @@ impl<'a> Compiler<'a> {
 
     fn string(&mut self, _can_assign: bool) -> Result<()> {
         if let Some(Literal::String(s)) = &self.previous().literal {
-            let value = Value::object(Object::new_gc_object(
-                ObjectType::String(self.boxed_string(s)),
-                self.allocater,
-            ));
+            let value = Value::object(self.allocater.alloc_interned_object(self.boxed_string(s)));
             self.emit_constant(value);
             Ok(())
         } else {
@@ -944,7 +941,7 @@ impl<'a> Compiler<'a> {
 
     #[inline]
     fn boxed_string(&mut self, name: &str) -> GCObjectOf<Box<str>> {
-        self.allocater.alloc_str(name)
+        self.allocater.alloc_interned_str(name)
     }
 
     #[inline]
@@ -1084,10 +1081,7 @@ impl<'a> Compiler<'a> {
     fn identifier_constant(&mut self, mut token: Token) -> Result<ByteUnit> {
         let literal = token.literal.take();
         if let Literal::Identifier(s) = literal.expect("Expect string") {
-            let name = Value::object(Object::new_gc_object(
-                ObjectType::String(self.boxed_string(&s)),
-                self.allocater,
-            ));
+            let name = Value::object(self.allocater.alloc_interned_object(self.boxed_string(&s)));
             Ok(self.add_constant(name))
         } else {
             bail!(parse_error(&token, "Expect identifier"))

@@ -388,7 +388,6 @@ impl std::hash::Hash for GCObjectOf<Box<str>> {
 impl PartialEq for GCObjectOf<Box<str>> {
     fn eq(&self, other: &Self) -> bool {
         self.reference == other.reference
-        // || unsafe { self.reference.as_ref() == other.reference.as_ref() }
     }
 }
 
@@ -596,6 +595,7 @@ impl<T> GCObjectOf<T> {
         GCObjectOf { reference }
     }
 
+    #[inline(always)]
     pub fn as_ptr(&self) -> *const T {
         self.reference.as_ptr()
     }
@@ -611,12 +611,14 @@ impl<T> Clone for GCObjectOf<T> {
 }
 
 impl<T> AsRef<T> for GCObjectOf<T> {
+    #[inline(always)]
     fn as_ref(&self) -> &T {
         unsafe { self.reference.as_ref() }
     }
 }
 
 impl<T> AsMut<T> for GCObjectOf<T> {
+    #[inline(always)]
     fn as_mut(&mut self) -> &mut T {
         unsafe { self.reference.as_mut() }
     }
@@ -625,12 +627,14 @@ impl<T> AsMut<T> for GCObjectOf<T> {
 impl<T> Deref for GCObjectOf<T> {
     type Target = T;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         self.as_ref()
     }
 }
 
 impl<T> DerefMut for GCObjectOf<T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut()
     }

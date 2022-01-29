@@ -7,18 +7,21 @@ use std::{
     rc::Rc,
 };
 
-use objects::GCObjectOf;
+use objects::{GCObjectOf, Object, ObjectType};
 
 pub mod chunk;
 pub mod objects;
 
 type Mutable<T> = Rc<RefCell<T>>;
 
+#[derive(Debug)]
+struct InternedValue(GCObjectOf<Box<str>>, Option<GCObjectOf<Object>>);
+
 /// A simple [objects::GCObjectOf] allocator.
 /// Internally uses [Box] to create/destroy objects
 pub struct ObjectAllocator {
     bytes_allocated: Cell<usize>,
-    interned_strings: Mutable<HashMap<Box<str>, GCObjectOf<Box<str>>>>,
+    interned_strings: Mutable<HashMap<Box<str>, InternedValue>>,
 }
 
 impl ObjectAllocator {
@@ -46,18 +49,34 @@ impl ObjectAllocator {
         GCObjectOf::new(ptr)
     }
 
-    /// Creates an instance of GCObject
-    pub fn alloc_str<T: AsRef<str>>(&self, object: T) -> GCObjectOf<Box<str>> {
+    /// Creates an interned instance of GCObject<Box<str>>
+    pub fn alloc_interned_str<T: AsRef<str>>(&self, object: T) -> GCObjectOf<Box<str>> {
         let object = object.as_ref().to_string().into_boxed_str();
         let v = self.interned_strings.borrow();
-        if let Some(string) = v.get(&object) {
-            *string
+        if let Some(v) = v.get(&object) {
+            (*v).0
         } else {
             drop(v);
             let string = self.alloc(object.clone());
             let mut v = (*self.interned_strings).borrow_mut();
-            v.insert(object, string);
+            v.insert(object, InternedValue(string, None));
             string
+        }
+    }
+
+    /// Creates an interned instance of GCObject<Object>
+    pub fn alloc_interned_object(&self, object: GCObjectOf<Box<str>>) -> GCObjectOf<Object> {
+        let mut v = self.interned_strings.borrow_mut();
+        if let Some(v) = v.get_mut(object.as_ref()) {
+            if let Some(v) = v.1 {
+                v
+            } else {
+                let o = Object::new_gc_object(ObjectType::String(v.0), self);
+                v.1 = Some(o);
+                o
+            }
+        } else {
+            panic!("BUG: String '{}' is not interned", object.as_ref());
         }
     }
 
@@ -207,40 +226,18 @@ mod tests {
         use crate::objects::nan_boxed::Value;
         #[inline(always)]
         fn value_equals(l: Value, r: Value) -> bool {
-            if l.is_bool() && r.is_bool() {
-                return l.as_bool() == r.as_bool();
-            } else if l.is_nil() && r.is_nil() {
-                return true;
-            } else if l.is_number() && r.is_number() {
-                return num_equals(l.as_number(), r.as_number());
-            } else if l.is_object() && r.is_object() {
-                match (l.as_object().object_type, r.as_object().object_type) {
-                    (ObjectType::String(l), ObjectType::String(r)) => {
-                        return std::ptr::eq(l.as_ptr(), r.as_ptr()) || l == r
-                    }
-                    _ => return false,
-                }
-            }
-            false
-        }
-        #[inline(always)]
-        fn num_equals(l: f64, r: f64) -> bool {
-            (l - r).abs() < EPSILON
+            l == r
         }
 
         let mut objects = ObjectAllocator::new();
+        let str: GCObjectOf<Box<str>> = objects.alloc_interned_str("str");
+        let stru: GCObjectOf<Box<str>> = objects.alloc_interned_str("stru");
         let constants = vec![
             Value::number(1.0),
             Value::bool(true),
             Value::bool(false),
-            Value::object(Object::new_gc_object(
-                ObjectType::String(objects.alloc("str".into())),
-                &objects,
-            )),
-            Value::object(Object::new_gc_object(
-                ObjectType::String(objects.alloc("stru".into())),
-                &objects,
-            )),
+            Value::object(objects.alloc_interned_object(str)),
+            Value::object(objects.alloc_interned_object(stru)),
         ];
         let mut stack = [Value::nil(); 10];
 

@@ -22,11 +22,11 @@ class Tree {
     }
   }
   
-  var tree = Tree(8);
+  var tree = Tree(_COUNT_);
   var start = clock();
   var i = 0;
-  while (i < _COUNT_) {
-    if (tree.walk() != 122068) print "Error";
+  while (i < 10) {
+    tree.walk();
     i = i+1;
   }
 "#;

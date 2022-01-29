@@ -678,7 +678,7 @@ impl<'a> VirtualMachine<'a> {
                         let instance = self.allocator.alloc(Instance::new(class, fields));
                         let receiver = Value::object(Object::new_gc_object(ObjectType::Instance(instance), &self.allocator));
                         // TODO preallocate this;
-                        let init = self.allocator.alloc_str("init");
+                        let init = self.allocator.alloc_interned_str("init");
                         if let Some(init) = methods.get(&init) {
                             self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
                             // set the receiver at start index for the constructor;
@@ -852,8 +852,7 @@ impl<'a> VirtualMachine<'a> {
                 concatenated_string.push_str(&r);
                 self.pop_from_stack();
                 self.pop_from_stack();
-                let allocated_string = self.allocator.alloc_str(concatenated_string);
-                let sv = Value::object(Object::new_gc_object(ObjectType::String(allocated_string), &self.allocator));
+                let sv = Value::object(self.allocator.alloc_interned_object(self.allocator.alloc_interned_str(concatenated_string)));
                 self.push_to_stack(sv);
                 Ok(())
             } else {
@@ -1007,9 +1006,11 @@ mod tests {
         print c + b;
         print a ==c;
         print a==b;
+        var d = "hello" + " ";
+        print a == d;
         "#;
         vm.interpret(source.to_string(), None)?;
-        assert_eq!("hello  world\ntrue\nfalse\n", utf8_to_string(&buf));
+        assert_eq!("hello  world\ntrue\nfalse\ntrue\n", utf8_to_string(&buf));
         Ok(())
     }
 

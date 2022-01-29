@@ -21,3 +21,6 @@ opt-level = 3
 [[bench]]
 harness = false
 name = "vm_bench"
+
+[features]
+nan_boxed = ["evie_native/nan_boxed", "evie_vm/nan_boxed"]
