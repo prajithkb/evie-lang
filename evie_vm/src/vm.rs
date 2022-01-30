@@ -1,4 +1,3 @@
-use std::collections::{HashMap};
 use std::io::{stdout, Write};
 use std::mem::{self, MaybeUninit};
 use std::ops::Range;
@@ -20,6 +19,7 @@ use evie_memory::objects::{ObjectType, GCObjectOf, Upvalue};
 use evie_memory::objects::nan_boxed::Value;
 #[cfg(not(feature = "nan_boxed"))]
 use evie_memory::objects::non_nan_boxed::Value;
+use evie_memory::cache::Cache;
 use crate::runtime_memory::Values;
 
 
@@ -264,6 +264,9 @@ impl<'a> VirtualMachine<'a> {
     }
 
     fn run(&mut self) -> Result<()> {
+        // Starting with 
+        let mut function_cache_stack= vec![Cache::new()];
+        let mut function_cache_stack_index = 0;
         let mut chunk_obj  = self.current_chunk();
         let mut chunk = &chunk_obj;
         let mut current_ip = &mut 0;
@@ -297,6 +300,8 @@ impl<'a> VirtualMachine<'a> {
                     if self.call_frames.len() == 1 {
                         return Ok(());
                     }
+                    function_cache_stack.pop();
+                    function_cache_stack_index -=1;
                     self.call_frames.pop();
                     self.ip = self.call_frame().non_null_ptr();
                     self.set_ip_for_run_method(&mut current_ip);
@@ -355,17 +360,23 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::GetGlobal => {
                     let name = self.read_string(chunk, current_ip)?;
-                    let value = self.runtime_values.get(name.as_ref());
-                    if let Some(v) = value {
-                        let v = *v;
+                    let function_cache = &mut function_cache_stack[function_cache_stack_index];
+                    if let Some(v) = function_cache.get(name) {
                         self.push_to_stack(v)
                     } else {
-                        bail!(self.runtime_error(&format!("Undefined variable '{}'", name.as_ref())))
+                        let value = self.runtime_values.get(name.as_ref());
+                        if let Some(&v) = value {
+                            function_cache.insert(name, v);
+                            self.push_to_stack(v)
+                        } else {
+                            bail!(self.runtime_error(&format!("Undefined variable '{}'", name.as_ref())))
+                        }
                     }
                 }
                 Opcode::SetGlobal => {
                     let name = self.read_string(chunk, current_ip)?;
                     let value = self.peek_at(0);
+                    function_cache_stack[function_cache_stack_index].insert(name, value);
                     let v = self.runtime_values.get_mut(name.as_ref());
                     match v {
                         Some(e) => {
@@ -411,6 +422,8 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::Call => {
                     let arg_count = self.read_byte(chunk,current_ip) as usize;
                     self.call_value(arg_count, self.peek_at(arg_count))?;
+                    function_cache_stack.push(Cache::new());
+                    function_cache_stack_index +=1;
                     chunk_obj = self.current_chunk();
                     chunk = &chunk_obj;
                     self.set_ip_for_run_method(&mut current_ip);
@@ -478,7 +491,7 @@ impl<'a> VirtualMachine<'a> {
                 }
                 Opcode::Class => {
                     let class = self.read_string(chunk, current_ip)?;
-                    let methods= self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, GCObjectOf<Closure>>::new());
+                    let methods= self.allocator.alloc(Cache::new());
                     let class_obj = self.allocator.alloc(Class::new(class, methods));
                     let value = Value::object(Object::new_gc_object(ObjectType::Class(class_obj), &self.allocator));
                     self.push_to_stack(value);
@@ -523,6 +536,8 @@ impl<'a> VirtualMachine<'a> {
                     let receiver = self.peek_at(arg_count);
                     let fn_start_stack_index = self.stack_top - arg_count - 1;
                     self.invoke(receiver, method, fn_start_stack_index)?;
+                    function_cache_stack.push(Cache::new());
+                    function_cache_stack_index +=1;
                     chunk_obj = self.current_chunk();
                     chunk = &chunk_obj;
                     self.set_ip_for_run_method(&mut current_ip);
@@ -534,9 +549,9 @@ impl<'a> VirtualMachine<'a> {
     fn invoke(&mut self, receiver: Value, method: GCObjectOf<Box<str>>, fn_start_stack_index: usize) -> Result<()> {
         if receiver.is_object() {
             if let ObjectType::Instance(i) = receiver.as_object().object_type {
-                if let Some(closure) = i.class.methods.get(&method) {
+                if let Some(closure) = i.class.methods.get(method) {
                     self.set_stack_mut(fn_start_stack_index, receiver);
-                    self.push_closure_to_call_frame(*closure, fn_start_stack_index)?;
+                    self.push_closure_to_call_frame(closure, fn_start_stack_index)?;
                     return Ok(())
                 }
             }
@@ -555,9 +570,9 @@ impl<'a> VirtualMachine<'a> {
         instance: GCObjectOf<Instance>,
         property: GCObjectOf<Box<str>>,
     )  -> Result<Value>{
-        if let Some(v) =instance.fields.get(&property) {
-            Ok(*v)
-        } else if let Some(&method) = instance.class.methods.get(&property){
+        if let Some(v) =instance.fields.get(property) {
+            Ok(v)
+        } else if let Some(method) = instance.class.methods.get(property){
                 Ok(self.bind_method(instance, method))
         } else {
             bail!(self.runtime_error(&format!("No property or method with the name {}", *property)))
@@ -674,19 +689,19 @@ impl<'a> VirtualMachine<'a> {
                     }
                    ObjectType::Class(class) => {
                         let methods = class.methods;
-                        let fields = self.allocator.alloc(HashMap::<GCObjectOf<Box<str>>, Value>::new());
+                        let fields = self.allocator.alloc(Cache::new());
                         let instance = self.allocator.alloc(Instance::new(class, fields));
                         let receiver = Value::object(Object::new_gc_object(ObjectType::Instance(instance), &self.allocator));
                         // TODO preallocate this;
                         let init = self.allocator.alloc_interned_str("init");
-                        if let Some(init) = methods.get(&init) {
+                        if let Some(init) = methods.get(init) {
                             self.check_arguments(&init.function.name.unwrap(), init.function.arity, arg_count)?;
                             // set the receiver at start index for the constructor;
                             self.set_stack_mut(
                                 start_index,
                                 receiver
                             );
-                            self.push_closure_to_call_frame(*init, start_index)?;
+                            self.push_closure_to_call_frame(init, start_index)?;
                         } else {
                             if arg_count != 0 {
                                 bail!(self

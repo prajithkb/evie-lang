@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fmt::Display,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -9,7 +8,7 @@ use std::{
 use crate::objects::nan_boxed::Value;
 #[cfg(not(feature = "nan_boxed"))]
 use crate::objects::non_nan_boxed::Value;
-use crate::{chunk::Chunk, ObjectAllocator};
+use crate::{cache::Cache, chunk::Chunk, ObjectAllocator};
 use derive_new::new;
 use evie_common::{bail, Writer};
 pub mod nan_boxed {
@@ -484,13 +483,13 @@ pub struct Class {
     /// Name of the class
     pub name: GCObjectOf<Box<str>>,
     /// Methods defined by this class
-    pub methods: GCObjectOf<HashMap<GCObjectOf<Box<str>>, GCObjectOf<Closure>>>,
+    pub methods: GCObjectOf<Cache<GCObjectOf<Closure>>>,
 }
 
 impl Class {
     pub fn new(
         name: GCObjectOf<Box<str>>,
-        methods: GCObjectOf<HashMap<GCObjectOf<Box<str>>, GCObjectOf<Closure>>>,
+        methods: GCObjectOf<Cache<GCObjectOf<Closure>>>,
     ) -> Self {
         Class { name, methods }
     }
@@ -508,14 +507,11 @@ pub struct Instance {
     /// Refers the class
     pub class: GCObjectOf<Class>,
     /// The fields held by this instance
-    pub fields: GCObjectOf<HashMap<GCObjectOf<Box<str>>, Value>>,
+    pub fields: GCObjectOf<Cache<Value>>,
 }
 
 impl Instance {
-    pub fn new(
-        class: GCObjectOf<Class>,
-        fields: GCObjectOf<HashMap<GCObjectOf<Box<str>>, Value>>,
-    ) -> Self {
+    pub fn new(class: GCObjectOf<Class>, fields: GCObjectOf<Cache<Value>>) -> Self {
         Instance { class, fields }
     }
 }

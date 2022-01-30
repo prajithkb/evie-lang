@@ -9,6 +9,7 @@ use std::{
 
 use objects::{GCObjectOf, Object, ObjectType};
 
+pub mod cache;
 pub mod chunk;
 pub mod objects;
 
