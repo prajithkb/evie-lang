@@ -54,9 +54,9 @@ impl CallFrame {
 /// Defines the given [evie_memory::objects::NativeFn] in the given [VirtualMachine]
 pub fn define_native_fn(name: &str, arity: usize, vm: &mut VirtualMachine, native_fn: NativeFn) {
     let box_str =name.to_string().into_boxed_str();
-    let name = vm.allocator.alloc(box_str.clone());
+    let name = vm.allocator.alloc_interned_str(box_str);
     let native_function = vm.allocator.alloc(NativeFunction::new(name, arity, native_fn));
-    vm.runtime_values.insert(box_str, Value::object(Object::new_gc_object(ObjectType::NativeFunction(native_function), &vm.allocator)));
+    vm.runtime_values.insert(name, Value::object(Object::new_gc_object(ObjectType::NativeFunction(native_function), &vm.allocator)));
 }
 
 /// Optional args for the [VirtualMachine]. 
@@ -356,7 +356,7 @@ impl<'a> VirtualMachine<'a> {
                 Opcode::DefineGlobal => {
                     let value = self.pop_from_stack();
                     let name = self.read_string(chunk, current_ip)?;
-                    self.runtime_values.insert(name.as_ref().clone(), value);
+                    self.runtime_values.insert(name, value);
                 }
                 Opcode::GetGlobal => {
                     let name = self.read_string(chunk, current_ip)?;
@@ -364,8 +364,8 @@ impl<'a> VirtualMachine<'a> {
                     if let Some(v) = function_cache.get(name) {
                         self.push_to_stack(v)
                     } else {
-                        let value = self.runtime_values.get(name.as_ref());
-                        if let Some(&v) = value {
+                        let value = self.runtime_values.get(name);
+                        if let Some(v) = value {
                             function_cache.insert(name, v);
                             self.push_to_stack(v)
                         } else {
@@ -377,15 +377,10 @@ impl<'a> VirtualMachine<'a> {
                     let name = self.read_string(chunk, current_ip)?;
                     let value = self.peek_at(0);
                     function_cache_stack[function_cache_stack_index].insert(name, value);
-                    let v = self.runtime_values.get_mut(name.as_ref());
-                    match v {
-                        Some(e) => {
-                            *e = value;
-                        }
-                        None => {
-                            drop(v);
-                            bail!(self.runtime_error(&format!("Undefined variable '{}'", name.as_ref())))
-                        }
+                    if self.runtime_values.contains_key(name) {
+                        self.runtime_values.insert(name, value);
+                    } else {
+                        bail!(self.runtime_error(&format!("Undefined variable '{}'", name.as_ref())))
                     }
                 }
                 Opcode::GetLocal => {

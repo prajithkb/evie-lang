@@ -3,12 +3,14 @@
 // use std::collections::HashMap;
 
 use crate::objects::GCObjectOf;
+pub type Item<V> = (GCObjectOf<Box<str>>, V);
 
 /// A cache for values.
 /// This is [Vec] based cache instead of a hashmap based one. The logic is to avoid hashing and random memory lookups
 /// Mostly used for properties methods, and global variables
+#[derive(Debug)]
 pub struct Cache<V: Copy> {
-    cached_values: Vec<(GCObjectOf<Box<str>>, V)>,
+    cached_values: Vec<Item<V>>,
     // values: HashMap<GCObjectOf<Box<str>>, Value>,
 }
 
@@ -33,5 +35,17 @@ impl<V: Copy> Cache<V> {
     pub fn get(&self, key: GCObjectOf<Box<str>>) -> Option<V> {
         let r = self.cached_values.iter().find(|(k, _)| *k == key);
         r.map(|(_, v)| *v)
+    }
+
+    pub fn contains_key(&self, key: GCObjectOf<Box<str>>) -> bool {
+        self.cached_values.iter().any(|(k, _)| *k == key)
+    }
+
+    pub fn size(&self) -> usize {
+        self.cached_values.len()
+    }
+
+    pub fn drain_first(&mut self, index: usize) -> Vec<Item<V>> {
+        self.cached_values.drain(0..index).collect()
     }
 }
