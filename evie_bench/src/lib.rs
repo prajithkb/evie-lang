@@ -15,16 +15,21 @@ mod tests {
 
     #[test]
     fn perf_timings() -> Result<()> {
+        let test_case_path =
+            std::env::var("TEST_CASE_PATH").unwrap_or_else(|_| TEST_CASE_PATH.into());
+        let clox_path = std::env::var("CLOX_PATH").unwrap_or_else(|_| CLOX_PATH.into());
+        let vm_path = std::env::var("VM_PATH").unwrap_or_else(|_| VM_PATH.into());
+        let ws_path = std::env::var("WS_PATH").unwrap_or_else(|_| WS_PATH.into());
         println!("This test runs the bench mark tests and compares the timing (performance) between clox and vm.\nIt DOES NOT  assert on anything!\n");
         println!("Building release...");
-        cargo_build_release()?;
-        if !binary_path_exists() {
-            eprint!("Binary path {} does not exist, exiting!", VM_PATH);
+        cargo_build_release(&ws_path)?;
+        if !binary_path_exists(&clox_path, &vm_path) {
+            eprint!("Binary path {} does not exist, exiting!", vm_path);
             // Exit early if there is nothing to run
             return Ok(());
         }
         println!("Built release, starting test...");
-        let dir_path = Path::new(TEST_CASE_PATH);
+        let dir_path = Path::new(&test_case_path);
         let mut entries: Vec<_> = fs::read_dir(dir_path)?.collect();
         entries.sort_by(|a, b| {
             let a = a.as_ref().unwrap();
@@ -42,8 +47,8 @@ mod tests {
                 let file_name = String::from(e.file_name().to_string_lossy());
                 let path = e.path();
                 println!("Benchmark for {:?}", path.as_os_str());
-                let timed_taken_by_vm = run_vm(path.as_os_str())?;
-                let timed_taken_by_clox = run_clox(path.as_os_str())?;
+                let timed_taken_by_vm = run_vm(path.as_os_str(), &vm_path)?;
+                let timed_taken_by_clox = run_clox(path.as_os_str(), &clox_path)?;
                 let percentage_difference =
                     ((timed_taken_by_vm / timed_taken_by_clox) * 100f64) - 100f64;
                 let percentage_difference_styled = if percentage_difference < 0f64 {
@@ -77,16 +82,16 @@ mod tests {
         Ok(())
     }
 
-    fn binary_path_exists() -> bool {
-        Path::new(CLOX_PATH).exists() && Path::new(VM_PATH).exists()
+    fn binary_path_exists(clox_path: &str, vm_path: &str) -> bool {
+        Path::new(clox_path).exists() && Path::new(vm_path).exists()
     }
 
-    fn run_clox(path: &OsStr) -> Result<f64> {
-        run(OsStr::new(CLOX_PATH), path)
+    fn run_clox(path: &OsStr, clox_path: &str) -> Result<f64> {
+        run(OsStr::new(clox_path), path)
     }
 
-    fn run_vm(path: &OsStr) -> Result<f64> {
-        run(OsStr::new(VM_PATH), path)
+    fn run_vm(path: &OsStr, vm_path: &str) -> Result<f64> {
+        run(OsStr::new(vm_path), path)
     }
 
     fn run(path_to_executable: &OsStr, path_to_file: &OsStr) -> Result<f64> {
@@ -109,13 +114,13 @@ mod tests {
         }
     }
 
-    fn cargo_build_release() -> Result<()> {
+    fn cargo_build_release(ws_path: &str) -> Result<()> {
         let cargo_run_release = Command::new("cargo")
             .arg("build")
             .arg("--release")
             .arg("--features=nan_boxed")
             .arg("--manifest-path")
-            .arg(WS_PATH)
+            .arg(ws_path)
             .output()?;
         if !cargo_run_release.status.success() {
             println!(
