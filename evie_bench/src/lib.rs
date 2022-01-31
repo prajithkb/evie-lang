@@ -24,7 +24,10 @@ mod tests {
         println!("Building release...");
         cargo_build_release(&ws_path)?;
         if !binary_path_exists(&clox_path, &vm_path) {
-            eprint!("Binary path {} does not exist, exiting!", vm_path);
+            eprintln!(
+                "Binaries ({} or {}) does not exist, exiting!",
+                clox_path, vm_path
+            );
             // Exit early if there is nothing to run
             return Ok(());
         }
