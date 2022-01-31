@@ -11,7 +11,6 @@ pub type Item<V> = (GCObjectOf<Box<str>>, V);
 #[derive(Debug)]
 pub struct Cache<V: Copy> {
     cached_values: Vec<Item<V>>,
-    // values: HashMap<GCObjectOf<Box<str>>, Value>,
 }
 
 impl<V: Copy> Cache<V> {
@@ -19,7 +18,6 @@ impl<V: Copy> Cache<V> {
     pub fn new() -> Self {
         Cache {
             cached_values: Vec::new(),
-            // values: HashMap::new(),
         }
     }
 
@@ -34,7 +32,7 @@ impl<V: Copy> Cache<V> {
 
     pub fn get(&self, key: GCObjectOf<Box<str>>) -> Option<V> {
         let r = self.cached_values.iter().find(|(k, _)| *k == key);
-        r.map(|(_, v)| *v)
+        r.map(|(_, v)| v).copied()
     }
 
     pub fn contains_key(&self, key: GCObjectOf<Box<str>>) -> bool {

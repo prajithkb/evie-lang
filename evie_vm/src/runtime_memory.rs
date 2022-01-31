@@ -8,6 +8,7 @@ use evie_memory::objects::non_nan_boxed::Value;
 use evie_memory::{cache::Cache, objects::GCObjectOf};
 pub type Values = Objects<Value>;
 
+/// This is an arbitrary number for now.
 const ITEM_COUNT: usize = 1024;
 
 #[allow(dead_code)]
@@ -32,6 +33,7 @@ impl<V: Copy> Objects<V> {
 
     pub fn insert(&mut self, key: GCObjectOf<Box<str>>, value: V) {
         self.cached_values.insert(key, value);
+        // When we exceed the item count threshold, we drain it into the hashmap.
         if self.cached_values.size() >= ITEM_COUNT {
             let items = self.cached_values.drain_first(ITEM_COUNT);
             items.into_iter().for_each(|(k, v)| {
@@ -41,8 +43,10 @@ impl<V: Copy> Objects<V> {
     }
 
     pub fn get(&mut self, key: GCObjectOf<Box<str>>) -> Option<V> {
+        // if it is in the cache return
         if let Some(v) = self.cached_values.get(key) {
             Some(v)
+            // fetch from the map, add to the cache and return
         } else if let Some(v) = self.objects.get(&key).copied() {
             self.cached_values.insert(key, v);
             Some(v)
