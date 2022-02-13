@@ -1,11 +1,11 @@
 //! Stores the runtime values of objects (used for storing global variables)
-use std::collections::HashMap;
 
 #[cfg(feature = "nan_boxed")]
 use evie_memory::objects::nan_boxed::Value;
 #[cfg(not(feature = "nan_boxed"))]
 use evie_memory::objects::non_nan_boxed::Value;
 use evie_memory::{cache::Cache, objects::GCObjectOf};
+use rustc_hash::FxHashMap;
 pub type Values = Objects<Value>;
 
 /// This is an arbitrary number for now.
@@ -17,7 +17,7 @@ pub struct Objects<V>
 where
     V: Copy,
 {
-    objects: HashMap<GCObjectOf<Box<str>>, V>,
+    objects: FxHashMap<GCObjectOf<Box<str>>, V>,
     cached_values: Cache<V>,
 }
 
@@ -26,7 +26,7 @@ impl<V: Copy> Objects<V> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Objects {
-            objects: HashMap::new(),
+            objects: FxHashMap::default(),
             cached_values: Cache::new(),
         }
     }

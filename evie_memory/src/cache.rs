@@ -1,7 +1,5 @@
 //! Cache module for caching expensive lookup (e.g global variables)
 
-// use std::collections::HashMap;
-
 use crate::objects::GCObjectOf;
 pub type Item<V> = (GCObjectOf<Box<str>>, V);
 

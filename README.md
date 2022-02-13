@@ -22,10 +22,16 @@ The full grammer can be found [here](todo).
    1. while
 4. Functions
 5. Closures
-6. Collection
-7. Object
+6. Collections (TODO)
+   1. Objects (`{}`)
+   2. Arrays (`[]`)
+7. Classes
+8. Coroutines (TODO)
    
 
+## IDE
+VSCode is my preferred IDE for Evie. [Evie Language Server](./evie_language_server/src/main.rs) is used for syntax highlighting and error checking. 
+https://code.visualstudio.com/api/language-extensions/language-server-extension-guide
 
 ## Performance
 Check [this](./performance_improvements.md) for all the different performance improvements. That explains how I improved the performance by nearly ten times!

@@ -11,6 +11,7 @@ members = [
   "evie_native",
   "evie_compiler",
   "evie_instructions",
+  "evie_language_server",
   "evie",
 ]
 

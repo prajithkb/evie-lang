@@ -2,13 +2,12 @@
 //! Also defines the memory management (Garbage Collection) for evie
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     ptr::NonNull,
     rc::Rc,
 };
 
 use objects::{GCObjectOf, Object, ObjectType};
-
+use rustc_hash::FxHashMap;
 pub mod cache;
 pub mod chunk;
 pub mod objects;
@@ -22,7 +21,7 @@ struct InternedValue(GCObjectOf<Box<str>>, Option<GCObjectOf<Object>>);
 /// Internally uses [Box] to create/destroy objects
 pub struct ObjectAllocator {
     bytes_allocated: Cell<usize>,
-    interned_strings: Mutable<HashMap<Box<str>, InternedValue>>,
+    interned_strings: Mutable<FxHashMap<Box<str>, InternedValue>>,
 }
 
 impl ObjectAllocator {
@@ -31,7 +30,7 @@ impl ObjectAllocator {
     pub fn new() -> Self {
         ObjectAllocator {
             bytes_allocated: Cell::new(0),
-            interned_strings: Rc::new(RefCell::new(HashMap::new())),
+            interned_strings: Rc::new(RefCell::new(FxHashMap::default())),
         }
     }
 
