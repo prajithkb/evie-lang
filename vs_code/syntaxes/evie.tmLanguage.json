@@ -561,7 +561,7 @@
       "patterns": [
         {
           "name": "meta.function.js",
-          "begin": "(?x)\n  \\b(function(?:\\s*\\*|(?=\\s|[(])))\n  \\s*([_$a-zA-Z][_$\\w]*)?\\s*",
+          "begin": "(?x)\n  \\b(fun(?:\\s*\\*|(?=\\s|[(])))\n  \\s*([_$a-zA-Z][_$\\w]*)?\\s*",
           "beginCaptures": {
             "1": {
               "name": "storage.type.function.js"

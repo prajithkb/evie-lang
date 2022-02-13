@@ -1,4 +1,5 @@
 # [PackageDev] target_format: plist, ext: tmLanguage
+# Mostly Javascript language grammer, tweaked for ev.
 name: Evie
 scopeName: source.js
 fileTypes: [ev]
@@ -326,7 +327,7 @@ repository:
     - name: meta.function.js
       begin: >-
         (?x)
-          \b(function(?:\s*\*|(?=\s|[(])))
+          \b(fun(?:\s*\*|(?=\s|[(])))
           \s*([_$a-zA-Z][_$\w]*)?\s*
       beginCaptures:
         '1': {name: storage.type.function.js}
